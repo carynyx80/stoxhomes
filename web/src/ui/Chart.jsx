@@ -16,15 +16,18 @@ export default function Chart({ data, range, symbol, lines = [] }) {
     let min = Math.min(...vals), max = Math.max(...vals);
     const span0 = max - min;
     for (const l of lines) if (l.v > min - span0 * 0.6 && l.v < max + span0 * 0.6) { min = Math.min(min, l.v); max = Math.max(max, l.v); }
+    const minSpan = ((min + max) / 2) * 0.004; // never zoom tighter than ±0.2%
+    if (max - min < minSpan) { const c = (min + max) / 2; min = c - minSpan / 2; max = c + minSpan / 2; }
     const pad = (max - min) * 0.12 || 1; min -= pad; max += pad;
-    const x = (i) => PL + (i / (data.length - 1)) * (W - PL - PR);
+    const t0 = data[0].t, t1 = data[data.length - 1].t, tSpan = t1 - t0 || 1;
+    const x = (i) => PL + ((data[i].t - t0) / tSpan) * (W - PL - PR); // time scale (live data is irregular)
     const y = (v) => PT + (1 - (v - min) / (max - min)) * (H - PT - PB);
     const line = (k) => data.map((d, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(d[k]).toFixed(1)}`).join("");
     const idx = line("index");
     const area = idx + `L${x(data.length - 1)} ${H - PB}L${x(0)} ${H - PB}Z`;
     const ticks = Array.from({ length: 5 }, (_, i) => min + ((max - min) * (i + 0.5)) / 5);
     const nx = W < 500 ? 3 : 5;
-    const xt = Array.from({ length: nx }, (_, i) => Math.round((i * (data.length - 1)) / (nx - 1)));
+    const xt = Array.from({ length: nx }, (_, k) => t0 + (tSpan * k) / (nx - 1));
     return { x, y, idx, mark: line("mark"), area, ticks, xt };
   }, [data, W, H, lines]);
 
@@ -32,7 +35,9 @@ export default function Chart({ data, range, symbol, lines = [] }) {
   const onMove = (e) => {
     const b = ref.current.getBoundingClientRect();
     const px = ((e.clientX - b.left) / b.width) * W;
-    const i = Math.max(0, Math.min(data.length - 1, Math.round(((px - PL) / (W - PL - PR)) * (data.length - 1))));
+    const tt = data[0].t + ((px - PL) / (W - PL - PR)) * (data[data.length - 1].t - data[0].t);
+    let i = 0;
+    for (let k = 0; k < data.length; k++) if (Math.abs(data[k].t - tt) < Math.abs(data[i].t - tt)) i = k;
     setHover(i);
   };
   const last = data[data.length - 1];
@@ -56,8 +61,8 @@ export default function Chart({ data, range, symbol, lines = [] }) {
             <text x={W - PR + 8} y={g.y(v) + 4} className="axis">{v.toFixed(1)}</text>
           </g>
         ))}
-        {g.xt.map((i) => (
-          <text key={i} x={g.x(i)} y={H - 8} className="axis" textAnchor={i === 0 ? "start" : i === data.length - 1 ? "end" : "middle"}>{fmtDate(data[i].t)}</text>
+        {g.xt.map((t, k) => (
+          <text key={k} x={PL + ((t - data[0].t) / ((data[data.length - 1].t - data[0].t) || 1)) * (W - PL - PR)} y={H - 8} className="axis" textAnchor={k === 0 ? "start" : k === g.xt.length - 1 ? "end" : "middle"}>{fmtDate(t)}</text>
         ))}
         <g key={symbol + range} className="draw">
           <path d={g.area} fill="url(#hatch)" />

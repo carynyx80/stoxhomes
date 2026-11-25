@@ -16,10 +16,17 @@ const CHAINS = {
   56: { name: "BNB Smart Chain", rpc: "https://bsc-dataseed.bnbchain.org", explorer: "https://bscscan.com", currency: "BNB" },
 };
 
-export const chain = { id: CHAIN_ID, ...CHAINS[CHAIN_ID], rpc: import.meta.env.VITE_RPC_URL || CHAINS[CHAIN_ID]?.rpc };
+// Any other chain id is a custom/demo chain: name from VITE_CHAIN_NAME, RPC taken as given.
+const CUSTOM = {
+  name: import.meta.env.VITE_CHAIN_NAME || "HouseDEX Demo",
+  rpc: import.meta.env.VITE_RPC_URL,
+  explorer: import.meta.env.VITE_EXPLORER_URL || null,
+  currency: "ETH",
+};
+export const chain = { id: CHAIN_ID, ...(CHAINS[CHAIN_ID] || CUSTOM), rpc: import.meta.env.VITE_RPC_URL || CHAINS[CHAIN_ID]?.rpc };
 export const deployment = deployments[CHAIN_ID];
 
-export const readProvider = new ethers.JsonRpcProvider(chain.rpc, CHAIN_ID);
+export const readProvider = new ethers.JsonRpcProvider(chain.rpc, CHAIN_ID, { staticNetwork: true });
 
 export function contracts(runner) {
   return {

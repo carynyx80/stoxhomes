@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useExchange, useHistory, getFundingGrid, USE_MOCK, useNow, countdown } from "./data/useMarkets.js";
+import { useExchange, useHistorySeries, getFundingGrid, USE_MOCK, useNow, countdown } from "./data/useMarkets.js";
+import { chain, deployment } from "./chain.js";
+const REAL_FUNDS = chain.id === 56;
+const shortAddr = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
+const RealFunds = () => (REAL_FUNDS ? <span className="realfunds"><i />Real funds · unaudited</span> : null);
+import { Sheet, Toasts } from "./ui/Overlays.jsx";
+import { API } from "./data/live.js";
 import Skyline from "./ui/Skyline.jsx";
 import Chart from "./ui/Chart.jsx";
 
@@ -35,20 +41,41 @@ function heat(t) { // 0..1 -> blueprint blue -> amber -> vermilion -> crimson
 
 // Close-only state: inside window = "active", within 24h before it = "soon"
 function printState(m, now) {
-  if (now >= m.closeOnlyFrom) return { kind: "active", left: m.nextPrintAt - now };
+  if (!m.nextPrintAt) return m.closeOnly ? { kind: "active", left: 0 } : { kind: "none", left: 0 };
+  if (m.closeOnly || now >= m.closeOnlyFrom) return { kind: "active", left: m.nextPrintAt - now };
   if (m.closeOnlyFrom - now < 86_400_000) return { kind: "soon", left: m.closeOnlyFrom - now };
   return { kind: "open", left: m.nextPrintAt - now };
 }
 
 export default function App() {
   const ex = useExchange();
-  const now = useNow();
+  if (!ex.ready) return <Boot error={ex.error} />;
+  return <Desk ex={ex} />;
+}
+
+function Boot({ error }) {
+  return (
+    <div className="app">
+      <div className="blueprint" aria-hidden="true" />
+      <div className="boot">
+        <div className="brand"><span className="mark">⌂</span><span>House<em>DEX</em></span></div>
+        <p className="eyebrow">{error ? "Connection problem" : `Reading ${chain.name || "chain"}…`}</p>
+        {error && <p className="boot-err">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+function Desk({ ex }) {
+  const now = useNow() + (ex.clockOffset || 0);
   const [sel, setSel] = useState(0);
   const [range, setRange] = useState("1Y");
-  const m = ex.markets[sel];
-  const hist = useMemo(() => useHistory(sel, range), [sel, range]);
-  const oi = ex.markets.reduce((s, x) => s + (x.longSize + x.shortSize) * x.index, 0);
-  const vol = ex.markets.reduce((s, x) => s + x.volume24h, 0);
+  const [sheet, setSheet] = useState(null);
+  const m = ex.markets[sel] || ex.markets[0];
+  const histRaw = useHistorySeries(m, range, now, Math.floor(now / 30000) + ":" + ex.trades.length);
+  const hist = histRaw && histRaw.length > 1 ? histRaw : [{ t: now - 86400000, index: m.index, mark: m.mark }, { t: now, index: m.index, mark: m.mark }];
+  const oi = ex.stats.oi;
+  const vol = ex.stats.volume24h;
   const rangeChg = hist[hist.length - 1].index / hist[0].index - 1;
   const pos = ex.positions.find((p) => p.marketId === sel);
   const posKey = pos ? pos.entryPrice.toFixed(2) + pos.liquidationPrice.toFixed(1) : "";
@@ -64,11 +91,15 @@ export default function App() {
         <div className="brand"><span className="mark">⌂</span><span>House<em>DEX</em></span></div>
         <nav><a className="on">Trade</a><a href="#vault">Vault</a><a href="#funding">Funding</a><a href="#tape">Tape</a></nav>
         <div className="top-r">
-          <span className="net"><i />{USE_MOCK ? "Mock data" : "BNB Chain"}</span>
-          <button className="wallet">{ex.wallet.address}</button>
+          <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : chain.name}</span>
+          {ex.faucet && ex.wallet.connected && <button className="faucet" disabled={!!ex.busy} onClick={() => ex.actions.faucet()}>{ex.busy === "faucet" ? "Funding…" : "Get test USDT"}</button>}
+          {ex.wallet.connected
+            ? <span className="wallet" title={ex.wallet.full}>{usd(ex.wallet.balance)} · {ex.wallet.address}</span>
+            : <button className="wallet" onClick={() => ex.actions.connect()}>{ex.busy === "connect" ? "Connecting…" : "Connect wallet"}</button>}
         </div>
       </header>
 
+      {ex.error && <div className="errbar">{ex.error}</div>}
       <Ticker markets={ex.markets} />
 
       <section className="hero">
@@ -78,10 +109,10 @@ export default function App() {
           <h1>Own the <em>skyline</em>,<br />not the mortgage.</h1>
         </div>
         <dl className="stats">
-          <div><dt>Total value locked</dt><dd><Tween value={ex.pool.poolValue} format={compact} /></dd></div>
+          <div><dt>Total value locked</dt><dd><Tween value={ex.stats.tvl} format={compact} /></dd></div>
           <div><dt>24h volume</dt><dd><Tween value={vol} format={compact} /></dd></div>
           <div><dt>Open interest</dt><dd><Tween value={oi} format={compact} /></dd></div>
-          <div><dt>Vault APR</dt><dd><Tween value={ex.pool.apr * 100} format={(v) => v.toFixed(1) + "%"} /></dd></div>
+          <div><dt>Vault APR</dt><dd>{ex.pool.apr == null ? "—" : <Tween value={ex.pool.apr * 100} format={(v) => v.toFixed(1) + "%"} />}</dd></div>
         </dl>
       </section>
 
@@ -94,7 +125,9 @@ export default function App() {
               <span className="sym">{c.symbol}</span>
               <span className="cpx">{c.index.toFixed(2)}</span>
               <span className="cname">{c.city}</span>
-              <span className={"cchg " + (c.change1y >= 0 ? "up" : "dn")}>{pctS(c.change1y, 1)} 1Y</span>
+              {c.change1y != null
+                ? <span className={"cchg " + (c.change1y >= 0 ? "up" : "dn")}>{pctS(c.change1y, 1)} 1Y</span>
+                : <span className={"cchg " + (c.change24h >= 0 ? "up" : "dn")}>{pctS(c.change24h, 2)} 24h</span>}
             </div>
           </button>
         ))}
@@ -130,18 +163,25 @@ export default function App() {
       </main>
 
       <section className="row2">
-        <Positions ex={ex} />
+        <Positions ex={ex} setSheet={setSheet} />
         <Tape trades={ex.trades} />
       </section>
 
       <section className="row3">
-        <Funding markets={ex.markets} now={now} />
-        <Vault pool={ex.pool} now={now} cooldown={ex.params.withdrawCooldown} />
+        <Funding markets={ex.markets} now={now} live={ex.live} />
+        <Vault ex={ex} pool={ex.pool} now={now} cooldown={ex.params.withdrawCooldown} setSheet={setSheet} />
       </section>
 
+      {sheet && <Sheet sheet={sheet} ex={ex} onClose={() => setSheet(null)} />}
+      <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={chain.explorer} />
       <footer className="foot">
         <span>HouseDEX — prototype on BNB Smart Chain testnet. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
         <span>Index = smoothed oracle print · Mark = index × (1 + skew / skewScale)</span>
+        {!USE_MOCK && deployment?.feeRecipient && (
+          <span>Protocol fees: {chain.explorer
+            ? <a href={`${chain.explorer}/address/${deployment.feeRecipient}`} target="_blank" rel="noreferrer">{shortAddr(deployment.feeRecipient)}</a>
+            : shortAddr(deployment.feeRecipient)}</span>
+        )}
       </footer>
     </div>
   );
@@ -150,15 +190,16 @@ export default function App() {
 function PrintBadge({ ps }) {
   if (ps.kind === "active") return <span className="pbadge hot"><i />Close-only · {countdown(ps.left)}</span>;
   if (ps.kind === "soon") return <span className="pbadge soon">Close-only in {countdown(ps.left)}</span>;
+  if (ps.kind === "none") return <span className="pbadge">No print scheduled</span>;
   return <span className="pbadge">Print in {countdown(ps.left)}</span>;
 }
 function PrintBanner({ ps }) {
-  if (ps.kind === "open") return null;
+  if (ps.kind === "open" || ps.kind === "none") return null;
   return (
     <div className={"pbanner " + ps.kind}>
       <span className="pb-ico">◷</span>
       {ps.kind === "active"
-        ? <p><b>Close-only — next index print in {countdown(ps.left)}.</b> New positions and increases are paused until the print lands; closing and reducing are always allowed.</p>
+        ? <p><b>Close-only{ps.left > 0 ? ` — next index print in ${countdown(ps.left)}` : " — index print pending"}.</b> New positions and increases are paused until the print lands; closing and reducing are always allowed.</p>
         : <p><b>Close-only in {countdown(ps.left)} — next index print.</b> Opening pauses 6h before each scheduled print so nobody can front-run it.</p>}
     </div>
   );
@@ -186,13 +227,16 @@ function Ticker({ markets }) {
 
 function Ticket({ m, ex, ps }) {
   const [side, setSide] = useState("long");
-  const [margin, setMargin] = useState(1000);
+  const [marginStr, setMargin] = useState("1000");
+  const margin = Math.max(0, Number(marginStr) || 0);
   const [lev, setLev] = useState(20);
   const t = (lev - 1) / 99;
   const color = heat(t);
-  const notional = margin * lev;
-  const fee = notional * ex.params.tradingFeeBps / 10_000;
+  const feeRate = ex.params.tradingFeeBps / 10_000;
+  const notional = (margin * lev) / (1 + lev * feeRate) * 0.999; // fee comes out of margin; same sizing the contract call uses
+  const fee = notional * feeRate;
   const entry = m.mark * (side === "long" ? 1.0004 : 0.9996);
+  const hasPos = ex.positions.some((p) => p.marketId === m.id);
   const mm = ex.params.maintenanceMarginBps / 10_000;
   const move = Math.max(0, (margin - fee) / notional - mm); // fraction price can move against you
   const liq = side === "long" ? entry * (1 - move) : entry * (1 + move);
@@ -200,7 +244,7 @@ function Ticket({ m, ex, ps }) {
   return (
     <aside className="panel ticket" style={{ "--heat": color }}>
       <div className="tk-head">
-        <span className="eyebrow">Order ticket</span>
+        <span className="eyebrow">Order ticket <RealFunds /></span>
         <span className="tk-mkt">{m.name}</span>
       </div>
       <div className={"sides " + side}>
@@ -208,8 +252,8 @@ function Ticket({ m, ex, ps }) {
         <button className={side === "short" ? "on" : ""} onClick={() => setSide("short")}>Short <small>price falls</small></button>
       </div>
       <label className="field">
-        <span>Margin <small>Balance {usd(ex.wallet.balance)}</small></span>
-        <div className="inp"><input type="number" min="1" value={margin} onChange={(e) => setMargin(Math.max(0, +e.target.value))} /><b>USDT</b></div>
+        <span>Margin <small>{ex.wallet.connected ? <>Balance {usd(ex.wallet.balance)}{ex.faucet && ex.live && <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>+ test USDT</button>}</> : "Wallet not connected"}</small></span>
+        <div className="inp"><input type="number" min="0" inputMode="decimal" value={marginStr} onChange={(e) => setMargin(e.target.value)} aria-label="Margin" /><b>USDT</b></div>
       </label>
 
       <div className="lev">
@@ -239,14 +283,20 @@ function Ticket({ m, ex, ps }) {
         <div><dt>Funding / day</dt><dd>{pctS((side === "long" ? -1 : 1) * m.funding, 4)}</dd></div>
       </dl>
       {ps.kind === "active"
-        ? <button className="go locked" disabled>Close-only · opens in {countdown(ps.left)}</button>
-        : <button className={"go " + side}>{side === "long" ? "Long" : "Short"} {m.symbol} · {lev}×</button>}
+        ? <button className="go locked" disabled>Close-only{ps.left > 0 ? ` · opens in ${countdown(ps.left)}` : " · awaiting print"}</button>
+        : !ex.wallet.connected
+          ? <button className="go long" onClick={() => ex.actions.connect()}>Connect wallet to trade</button>
+          : hasPos
+            ? <button className="go locked" disabled>Position open — manage it below</button>
+            : <button className={"go " + side} disabled={!!ex.busy || margin <= 0} onClick={() => ex.actions.open({ marketId: m.id, side, margin: marginStr, leverage: lev })}>
+                {ex.busy === "open" ? "Submitting…" : `${side === "long" ? "Long" : "Short"} ${m.symbol} · ${lev}×`}
+              </button>}
       <p className="fine">Fills at average premium across the trade. Max slippage 0.5%.</p>
     </aside>
   );
 }
 
-function Positions({ ex }) {
+function Positions({ ex, setSheet }) {
   const [tab, setTab] = useState("pos");
   return (
     <section className="panel positions">
@@ -256,8 +306,9 @@ function Positions({ ex }) {
         ))}
       </div>
       {tab === "ord" && <div className="empty"><b>No resting orders.</b><span>HouseDEX fills against the pool at mark — there is no order book to wait on.</span></div>}
-      {tab === "his" && <History rows={ex.history} />}
-      {tab === "pos" && <div className="tbl">
+      {tab === "his" && (ex.history.length ? <History rows={ex.history} /> : <div className="empty"><b>No trades yet.</b><span>{ex.wallet.connected ? "Your opens, modifies and closes appear here." : "Connect a wallet to see your history."}</span></div>)}
+      {tab === "pos" && ex.positions.length === 0 && <div className="empty"><b>No open positions.</b><span>{ex.wallet.connected ? "Pick a city above and open one from the order ticket." : "Connect a wallet to see your positions."}</span></div>}
+      {tab === "pos" && ex.positions.length > 0 && <div className="tbl">
         <div className="tr th"><span>Market</span><span>Size</span><span>Entry / Index</span><span>Margin</span><span>PnL</span><span>Funding</span><span>Liq. price</span><span /></div>
         {ex.positions.map((p) => {
           const toLiq = Math.abs(p.indexPrice - p.liquidationPrice) / p.indexPrice;
@@ -270,12 +321,17 @@ function Positions({ ex }) {
               <span data-k="PnL" className={p.pnl >= 0 ? "up" : "dn"}><b>{(p.pnl >= 0 ? "+" : "−") + usd(Math.abs(p.pnl))}</b> <small>{pctS(p.pnl / p.margin, 1)}</small></span>
               <span data-k="Funding" className={p.funding >= 0 ? "up" : "dn"}>{(p.funding >= 0 ? "+" : "−") + usd(Math.abs(p.funding), 2)}</span>
               <span data-k="Liq. price">{p.liquidationPrice.toFixed(2)} <small>{(toLiq * 100).toFixed(1)}% away</small></span>
-              <span className="acts"><button className="mini">+ Increase</button><button className="mini">− Reduce</button><button className="ghost">Close</button></span>
+              <span className="acts">
+                <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "increase", pos: p })}>+ Increase</button>
+                <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "reduce", pos: p })}>− Reduce</button>
+                <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "addMargin", pos: p })}>+ Margin</button>
+                <button className="ghost" disabled={!!ex.busy} onClick={() => ex.actions.close({ marketId: p.marketId })}>{ex.busy === "close" ? "Closing…" : "Close"}</button>
+              </span>
             </div>
           );
         })}
       </div>}
-      {tab === "pos" && <div className="pos-foot"><span>Account equity <b>{usd(ex.positions.reduce((a, p) => a + p.equity, 0))}</b></span><span>Unrealised PnL <b className="up">{(ex.positions.reduce((a, p) => a + p.pnl, 0) >= 0 ? "+" : "−") + usd(Math.abs(ex.positions.reduce((a, p) => a + p.pnl, 0)))}</b></span><span>Free collateral <b>{usd(ex.wallet.balance)}</b></span></div>}
+      {tab === "pos" && ex.positions.length > 0 && <div className="pos-foot"><span>Account equity <b>{usd(ex.positions.reduce((a, p) => a + p.equity, 0))}</b></span><span>Unrealised PnL <b className="up">{(ex.positions.reduce((a, p) => a + p.pnl, 0) >= 0 ? "+" : "−") + usd(Math.abs(ex.positions.reduce((a, p) => a + p.pnl, 0)))}</b></span><span>Free collateral <b>{usd(ex.wallet.balance)}</b></span></div>}
     </section>
   );
 }
@@ -303,11 +359,12 @@ function Tape({ trades }) {
     <section className="panel tape" id="tape">
       <div className="sec-head"><h3>Live tape</h3><span className="live"><i />Streaming</span></div>
       <ol>
+        {trades.length === 0 && <li className="tape-empty">{USE_MOCK ? "" : "No trades indexed yet — or the indexer is offline."}</li>}
         {trades.slice(0, 9).map((t) => (
           <li key={t.id} className={t.side}>
             <span className="tt">{new Date(t.ts).toLocaleTimeString("en-GB")}</span>
             <b>{t.market}</b>
-            <span className="ts">{t.side === "long" ? "▲ Long" : "▼ Short"} {t.leverage}×</span>
+            <span className="ts">{t.side === "long" ? "▲ Long" : "▼ Short"} {t.leverage ? t.leverage + "×" : t.kind}</span>
             <span className="tp">{t.price.toFixed(2)}</span>
             <span className="tn">{compact(t.notional)}</span>
           </li>
@@ -317,8 +374,8 @@ function Tape({ trades }) {
   );
 }
 
-function Funding({ markets, now }) {
-  const grid = useMemo(() => getFundingGrid(), []);
+function Funding({ markets, now, live }) {
+  const grid = useFundingGrid(markets, live, now);
   const cell = (v) => {
     const a = Math.min(1, Math.abs(v) / 0.001);
     return v >= 0 ? `rgba(229,72,43,${0.1 + a * 0.85})` : `rgba(35,64,230,${0.1 + a * 0.85})`;
@@ -330,7 +387,7 @@ function Funding({ markets, now }) {
         {markets.map((c, r) => (
           <div className="hm-row" key={c.symbol}>
             <b>{c.symbol}</b>
-            <div className="hm-cells">{grid[r].map((v, d) => <i key={d} style={{ background: cell(v), animationDelay: (r * 14 + d) * 12 + "ms" }} title={`${(v * 100).toFixed(4)}%/day`} />)}</div>
+            <div className="hm-cells">{grid[r].map((v, d) => <i key={d} style={{ background: v == null ? "rgba(18,17,16,.05)" : cell(v), animationDelay: (r * 14 + d) * 12 + "ms" }} title={v == null ? "no data" : `${(v * 100).toFixed(4)}%/day`} />)}</div>
             <span className={c.funding >= 0 ? "dn" : "up"}>{pctS(c.funding, 3)}</span>
           </div>
         ))}
@@ -338,7 +395,8 @@ function Funding({ markets, now }) {
       </div>
       <div className="cal">
         <p className="eyebrow">Index print calendar · close-only opens 6h before</p>
-        {[...markets].sort((a, b) => a.nextPrintAt - b.nextPrintAt).map((c) => {
+        {markets.every((c) => !c.nextPrintAt) && <p className="cal-none">No index prints scheduled. The keeper schedules each monthly print ahead of time.</p>}
+        {[...markets].filter((c) => c.nextPrintAt).sort((a, b) => a.nextPrintAt - b.nextPrintAt).map((c) => {
           const ps = now >= c.closeOnlyFrom ? "active" : c.closeOnlyFrom - now < 86_400_000 ? "soon" : "open";
           const span = 9 * 86_400_000, x = Math.min(1, (c.nextPrintAt - now) / span), w = Math.min(x, 6 * 3_600_000 / span);
           return (
@@ -355,41 +413,70 @@ function Funding({ markets, now }) {
   );
 }
 
-function Vault({ pool, now, cooldown }) {
-  const w = pool.pendingWithdrawal, total = cooldown * 1000, done = Math.min(1, (now - w.requestedAt) / total);
+function Vault({ ex, pool, now, cooldown, setSheet }) {
+  const w = pool.pendingWithdrawal, total = cooldown * 1000, done = w ? Math.max(0, Math.min(1, (now - w.requestedAt) / total)) : 0;
+  const unlocked = w && now >= w.unlockAt, expired = w && w.expiresAt && now > w.expiresAt;
   let acc = 0;
   const colors = ["#ffffff", "#0b1680", "#9fb0ff", "#f0a202", "#e5482b", "#121110"];
   return (
     <section className="panel vault" id="vault">
       <div className="vault-l">
-        <p className="eyebrow">Liquidity vault · hUSDT</p>
+        <p className="eyebrow">Liquidity vault · hUSDT <RealFunds /></p>
         <h3>Be the house.</h3>
         <p className="lede">LPs are the counterparty to every trade — earning fees, funding from the crowded side and trader losses.</p>
-        <div className="apr"><b><Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} /><i>%</i></b><span>APR, trailing 30d</span></div>
+        <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
         <div className="apr-split">
-          <span><i style={{ background: "#fff" }} />Fees {(pool.feesApr * 100).toFixed(1)}%</span>
-          <span><i style={{ background: "#9fb0ff" }} />Funding {(pool.fundingApr * 100).toFixed(1)}%</span>
-          <span><i style={{ background: "#f0a202" }} />Trader PnL {(pool.pnlApr * 100).toFixed(1)}%</span>
+          {pool.feesApr != null && <span><i style={{ background: "#fff" }} />Fees {(pool.feesApr * 100).toFixed(1)}%</span>}
+          {pool.fundingApr != null && <span><i style={{ background: "#9fb0ff" }} />Funding {(pool.fundingApr * 100).toFixed(1)}%</span>}
+          {pool.pnlApr != null && <span><i style={{ background: "#f0a202" }} />Trader PnL {(pool.pnlApr * 100).toFixed(1)}%</span>}
+          {ex.live && <span>Funding and trader PnL accrue to share price</span>}
         </div>
       </div>
       <div className="vault-r">
         <div className="vstats">
           <Fact k="Pool value" v={compact(pool.poolValue)} />
           <Fact k="Share price" v={"$" + pool.sharePrice.toFixed(4)} />
-          <Fact k="Your shares" v={pool.shares.toLocaleString()} />
+          <Fact k="Your shares" v={pool.shares.toLocaleString(undefined, { maximumFractionDigits: 2 })} />
           <Fact k="Utilization" v={(pool.utilization * 100).toFixed(0) + "%"} />
         </div>
         <div className="comp">
           <div className="comp-bar">{pool.composition.map((c, i) => <i key={c.label} style={{ width: c.value * 100 + "%", background: colors[i] }} />)}</div>
           <ul>{pool.composition.map((c, i) => { acc += c.value; return <li key={c.label}><i style={{ background: colors[i] }} />{c.label}<b>{(c.value * 100).toFixed(0)}%</b></li>; })}</ul>
         </div>
-        <div className="pending">
-          <div className="pend-top"><span>Pending withdrawal · {w.shares.toLocaleString()} shares ≈ {usd(w.shares * pool.sharePrice)}</span><b>{now >= w.unlockAt ? "Unlocked" : "Unlocks in " + countdown(w.unlockAt - now)}</b></div>
+        {w && <div className="pending">
+          <div className="pend-top"><span>Pending withdrawal · {w.shares.toLocaleString(undefined, { maximumFractionDigits: 2 })} shares ≈ {usd(w.estimatedAmount ?? w.shares * pool.sharePrice)}</span><b>{expired ? "Expired — cancel & re-request" : unlocked ? "Unlocked" : "Unlocks in " + countdown(w.unlockAt - now)}</b></div>
           <div className="pend-bar"><i style={{ width: done * 100 + "%" }} />{[0.25, 0.5, 0.75].map((q) => <em key={q} style={{ left: q * 100 + "%" }} />)}</div>
-          <div className="pend-ax"><span>Requested</span><span>24h cooldown</span><span>Withdrawable</span></div>
+          <div className="pend-ax"><span>Requested</span><span>{Math.round(cooldown / 3600)}h cooldown</span><span>Withdrawable</span></div>
+          <div className="pend-btns">
+            <button className="ghost" disabled={!!ex.busy} onClick={() => ex.actions.cancelWithdraw()}>{ex.busy === "cancelWithdraw" ? "Cancelling…" : "Cancel"}</button>
+            <button className="go long" disabled={!unlocked || expired || !!ex.busy} onClick={() => ex.actions.withdraw()}>{ex.busy === "withdraw" ? "Withdrawing…" : unlocked ? "Withdraw now" : "Withdraw · " + countdown(w.unlockAt - now)}</button>
+          </div>
+        </div>}
+        <div className="vbtns">
+          <button className="go long" disabled={!!ex.busy} onClick={() => (ex.wallet.connected ? setSheet({ type: "deposit" }) : ex.actions.connect())}>{ex.busy === "deposit" ? "Depositing…" : "Deposit USDT"}</button>
+          <button className="ghost" disabled={!!ex.busy || !!w || (ex.wallet.connected && pool.shares <= 0)} onClick={() => setSheet({ type: "requestWithdraw" })}>Request withdraw</button>
         </div>
-        <div className="vbtns"><button className="go long">Deposit USDT</button><button className="ghost">Request withdraw</button></div>
       </div>
     </section>
   );
+}
+
+function useFundingGrid(markets, live, now) {
+  const [grid, setGrid] = useState(() => (live ? markets.map(() => Array(14).fill(null)) : getFundingGrid()));
+  const day = Math.floor(now / 86_400_000);
+  useEffect(() => {
+    if (!live) return;
+    let stop = false;
+    Promise.all(markets.map((m) => fetch(`${API}/markets/${m.id}/history?range=1M`).then((r) => r.json()).catch(() => null))).then((hs) => {
+      if (stop) return;
+      setGrid(hs.map((h, i) => Array.from({ length: 14 }, (_, d) => {
+        const end = (day - 13 + d + 1) * 86_400_000, start = end - 86_400_000;
+        const xs = (h?.snapshots || []).filter((s) => s.timestamp * 1000 >= start && s.timestamp * 1000 < end).map((s) => s.fundingRatePerDay);
+        if (d === 13 && !xs.length) return markets[i].funding;
+        return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+      })));
+    });
+    return () => { stop = true; };
+  }, [live, day, markets.length, Math.floor(now / 60000)]); // eslint-disable-line react-hooks/exhaustive-deps
+  return grid;
 }
