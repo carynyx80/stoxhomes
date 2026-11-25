@@ -161,6 +161,10 @@ export class SolRpc {
     return BigInt(r.value);
   }
 
+  async getBlockHeight() {
+    return Number(await this.call('getBlockHeight', [{ commitment: 'finalized' }]));
+  }
+
   async getLatestBlockhash() {
     const r = await this.call('getLatestBlockhash', [{ commitment: 'finalized' }]);
     return { blockhash: r.value.blockhash, lastValidBlockHeight: r.value.lastValidBlockHeight };
@@ -309,10 +313,20 @@ export class SolanaAdapter {
   }
 
   async _poll() {
-    for (const t of this.tokens) await this._pollToken(t);
+    // Finalized block height BEFORE listing signatures: once a mint's scan completes, every finalized tx at or
+    // below this height that touched its ATA has been processed.
+    let height = null;
+    if (typeof this.rpc.getBlockHeight === 'function') {
+      try { height = await this.rpc.getBlockHeight(); } catch (e) { this.log(`solana getBlockHeight failed: ${e.message}`); }
+    }
+    for (const t of this.tokens) {
+      const complete = await this._pollToken(t);
+      if (complete && height !== null) this.setMeta(`sol_scanned_height:${t.mint}`, height);
+    }
     this.lastError = null;
   }
 
+  /** Returns true when every new signature was processed (no backlog left). */
   async _pollToken(t) {
     await this._initCursor(t);
     const key = `sol_until:${t.mint}`;
@@ -337,12 +351,22 @@ export class SolanaAdapter {
     }
     sigs.reverse(); // oldest first
     let processed = 0;
+    const maxTx = this.cfg.maxTxPerPoll || 200;
     for (const s of sigs) {
-      if (processed >= (this.cfg.maxTxPerPoll || 200)) break;
+      if (processed >= maxTx) {
+        this.log(`WARNING solana ${t.symbol}: ${sigs.length} new signatures, processed ${maxTx} this poll (limit hit; possible spam). Backlog continues next poll.`);
+        return false;
+      }
       const seen = this.db.prepare('SELECT 1 FROM sol_seen WHERE signature = ? AND mint = ?').get(s.signature, t.mint);
-      if (!seen) {
+      if (!seen && s.err !== null && s.err !== undefined) {
+        // Failed transactions move no tokens: skip the getTransaction call (cheap spam stays cheap for us).
+        this.engine.tx(() => {
+          this.db.prepare('INSERT OR IGNORE INTO sol_seen (signature, mint) VALUES (?, ?)').run(s.signature, t.mint);
+          this.setMeta(key, s.signature);
+        });
+      } else if (!seen) {
         const tx = await this.rpc.getTransaction(s.signature);
-        if (!tx) break; // not retrievable yet: retry next poll without advancing the cursor
+        if (!tx) return false; // not retrievable yet: retry next poll without advancing the cursor
         this.engine.tx(() => {
           this._record(t, s.signature, tx);
           this.db.prepare('INSERT OR IGNORE INTO sol_seen (signature, mint) VALUES (?, ?)').run(s.signature, t.mint);
@@ -354,6 +378,33 @@ export class SolanaAdapter {
         this.setMeta(key, s.signature);
       }
     }
+    return true;
+  }
+
+  /**
+   * A locked withdrawal may only be unlocked (rejected) when its payout can no longer land: the chain is past the
+   * stored lastValidBlockHeight and the watcher has fully scanned past it without a payout to that user/token.
+   */
+  async verifyUnlock(w) {
+    if (!w.processing_at) return true;
+    const t = this.bySymbol.get(w.token || 'USDC');
+    const lvbh = w.lock_lvbh === null || w.lock_lvbh === undefined ? null : Number(w.lock_lvbh);
+    if (!lvbh) throw new AppError('PAYOUT_MAY_LAND', 'Locked without a payout blockhash/lastValidBlockHeight; cannot prove the payout will not land');
+    const height = await this.rpc.getBlockHeight();
+    const scanned = Number(this.meta(`sol_scanned_height:${t.mint}`) || 0);
+    if (height <= lvbh || scanned <= lvbh) {
+      throw new AppError('PAYOUT_MAY_LAND', `Payout blockhash valid until block height ${lvbh}; chain is at ${height}, watcher scanned to ${scanned}. Try again once both are past ${lvbh}.`);
+    }
+    const landed = this.db.prepare('SELECT 1 FROM sol_outgoing WHERE recipient = ? AND mint = ? AND at >= ?').get(w.address, t.mint, w.processing_at);
+    if (landed) throw new AppError('PAYOUT_MAY_LAND', 'A payout to this user in this token was seen after the lock; mark it paid instead');
+    return true;
+  }
+
+  lockInfo(body) {
+    const { blockhash, lastValidBlockHeight } = body || {};
+    decodePubkey(blockhash, 'blockhash');
+    if (!Number.isSafeInteger(lastValidBlockHeight) || lastValidBlockHeight <= 0) throw new AppError('BAD_INPUT', 'lastValidBlockHeight must be a positive integer');
+    return { blockhash, lastValidBlockHeight };
   }
 
   _record(t, signature, tx) {
@@ -378,6 +429,16 @@ export class SolanaAdapter {
         this.db.prepare('INSERT INTO sol_outgoing (signature, mint, recipient, amount, status, withdrawal_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(signature, t.mint, rc.owner, rc.amount, w ? 'matched' : 'unmatched', w ? w.id : null, now);
         if (w) this.engine.markWithdrawalPaid(Number(w.id), signature);
+        else {
+          // Backstop: payout for a withdrawal that was cancelled/rejected in the last 72h -> claw back into a hold.
+          const prior = this.db.prepare(`SELECT * FROM withdrawals WHERE address = ? AND token = ? AND amount = ? AND status IN ('cancelled', 'rejected')
+            AND updated_at >= ? AND id NOT IN (SELECT withdrawal_id FROM alerts WHERE withdrawal_id IS NOT NULL) ORDER BY id LIMIT 1`)
+            .get(rc.owner, t.symbol, rc.amount, now - 72 * 3600);
+          if (prior) {
+            const r = this.engine.recoveryHold({ address: rc.owner, token: t.symbol, amount: rc.amount, signature, withdrawalId: Number(prior.id) });
+            this.log(`ALERT payout ${signature} to ${rc.owner} matches ${prior.status} withdrawal #${prior.id}: held ${fmtUsdt(r.held)}, shortfall ${fmtUsdt(r.shortfall)}`);
+          }
+        }
       }
     }
   }
@@ -493,6 +554,7 @@ export class SolanaAdapter {
       fields: {
         companyOnChain: fmtUsdt(total), companyTokens: balances, companySol: formatUnits(lamports, 9),
         unattributedDeposits: this.unattributed('unattributed'),
+        alerts: engine.alerts('open'),
         // payouts seen on chain that matched no pending withdrawal (e.g. paid after a cancel): reconcile manually
         unmatchedPayouts: this.db.prepare("SELECT signature, mint, recipient, amount, at FROM sol_outgoing WHERE status = 'unmatched' ORDER BY id DESC LIMIT 200").all()
           .map((o) => ({ signature: o.signature, token: this.byMint.get(o.mint)?.symbol, recipient: o.recipient, amount: fmtUsdt(BigInt(o.amount)), at: Number(o.at) })),

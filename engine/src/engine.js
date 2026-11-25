@@ -191,7 +191,7 @@ export class Engine extends EventEmitter {
     }
     // Locked withdrawal accounts equal pending withdrawals.
     const pend = new Map();
-    for (const w of this.db.prepare("SELECT address, amount FROM withdrawals WHERE status = 'pending'").all()) {
+    for (const w of this.db.prepare("SELECT address, amount FROM withdrawals WHERE status IN ('pending', 'recovery_hold')").all()) {
       pend.set(w.address, (pend.get(w.address) || 0n) + B(w.amount));
     }
     for (const r of this.db.prepare("SELECT account, balance FROM balances WHERE account LIKE 'user:%:withdraw_locked'").all()) {
@@ -825,7 +825,7 @@ export class Engine extends EventEmitter {
     });
   }
 
-  _unlockWithdrawal(id, status, reason, byAddress) {
+  _unlockWithdrawal(id, status, reason, byAddress, opts = {}) {
     return this.tx(() => {
       const w = this.s.wd.get(id);
       if (!w) throw new AppError('NOT_FOUND', 'Withdrawal not found', 404);
@@ -833,6 +833,10 @@ export class Engine extends EventEmitter {
       if (w.status !== 'pending') throw new AppError('NOT_PENDING', 'Withdrawal is not pending');
       // Once the admin has started paying, the user can no longer cancel (the payout may already be on chain).
       if (byAddress && w.processing_at) throw new AppError('WITHDRAW_LOCKED', 'Withdrawal is being paid and can no longer be cancelled');
+      // A locked withdrawal may have a payout in flight: only unlock once the chain adapter proved it cannot land.
+      if (!byAddress && w.processing_at && !opts.unlockVerified) {
+        throw new AppError('PAYOUT_MAY_LAND', 'This withdrawal is locked for payment and the payout could still land on chain; wait until its blockhash has expired and the watcher has scanned past it');
+      }
       const amount = B(w.amount);
       this.post([[acct.locked(w.address), -amount], [acct.available(w.address), amount]], `withdraw_${status}:${id}`);
       this.s.setWd.run(status, null, reason ? String(reason).slice(0, 500) : null, this.now(), id);
@@ -844,15 +848,73 @@ export class Engine extends EventEmitter {
   }
 
   cancelWithdrawal(address, id) { return this._unlockWithdrawal(id, 'cancelled', null, address); }
-  rejectWithdrawal(id, reason) { return this._unlockWithdrawal(id, 'rejected', reason || 'rejected', null); }
+  rejectWithdrawal(id, reason, opts = {}) { return this._unlockWithdrawal(id, 'rejected', reason || 'rejected', null, opts); }
+
+  /**
+   * Backstop: a payout landed that matches a recently cancelled/rejected withdrawal. Debit the user's available
+   * balance (never below zero) into a withdraw_locked recovery hold and raise an alert; record any shortfall.
+   */
+  recoveryHold({ address, token, amount, signature, withdrawalId }) {
+    return this.tx(() => {
+      const now = this.now();
+      const avail = this.balance(acct.available(address));
+      const held = avail < amount ? (avail > 0n ? avail : 0n) : amount;
+      let holdId = null;
+      if (held > 0n) {
+        const r = this.db.prepare("INSERT INTO withdrawals (address, amount, to_addr, status, created_at, updated_at, token, tx_hash, reason, recovery_for) VALUES (?, ?, ?, 'recovery_hold', ?, ?, ?, ?, ?, ?)")
+          .run(address, held, address, now, now, token, signature, 'payout landed after cancel/reject', withdrawalId);
+        holdId = Number(r.lastInsertRowid);
+        this.post([[acct.available(address), -held], [acct.locked(address), held]], `recovery_hold:${holdId}:${signature}`);
+      }
+      const a = this.db.prepare("INSERT INTO alerts (at, kind, address, token, amount, held, shortfall, signature, withdrawal_id, hold_withdrawal_id, status) VALUES (?, 'payout_after_unlock', ?, ?, ?, ?, ?, ?, ?, ?, 'open')")
+        .run(now, address, token, amount, held, amount - held, signature, withdrawalId, holdId);
+      this._emit('me', address);
+      return { alertId: Number(a.lastInsertRowid), held, shortfall: amount - held };
+    });
+  }
+
+  alerts(status = 'open') {
+    const rows = status === 'all' ? this.db.prepare('SELECT * FROM alerts ORDER BY id DESC LIMIT 500').all()
+      : this.db.prepare('SELECT * FROM alerts WHERE status = ? ORDER BY id DESC LIMIT 500').all(status);
+    return rows.map((r) => ({
+      id: n(r.id), at: n(r.at), kind: r.kind, address: r.address, token: r.token, amount: fmtUsdt(B(r.amount)), held: fmtUsdt(B(r.held)),
+      shortfall: fmtUsdt(B(r.shortfall)), signature: r.signature, withdrawalId: n(r.withdrawal_id), holdWithdrawalId: n(r.hold_withdrawal_id),
+      status: r.status, resolution: r.resolution || null,
+    }));
+  }
+
+  /** Admin: settle a recovery hold as paid on chain ("paid") or give it back to the user ("release"). */
+  resolveAlert(id, action) {
+    if (!['paid', 'release'].includes(action)) throw new AppError('BAD_INPUT', 'action must be paid or release');
+    return this.tx(() => {
+      const a = this.db.prepare('SELECT * FROM alerts WHERE id = ?').get(id);
+      if (!a) throw new AppError('NOT_FOUND', 'Alert not found', 404);
+      if (a.status !== 'open') throw new AppError('NOT_PENDING', 'Alert already resolved');
+      if (a.hold_withdrawal_id !== null) {
+        const w = this.s.wd.get(a.hold_withdrawal_id);
+        const amt = B(w.amount);
+        if (action === 'paid') {
+          this.post([[acct.locked(w.address), -amt], [acct.withdrawals, amt]], `recovery_paid:${w.id}`);
+          this.s.setWd.run('paid', null, null, this.now(), w.id);
+        } else {
+          this.post([[acct.locked(w.address), -amt], [acct.available(w.address), amt]], `recovery_release:${w.id}`);
+          this.s.setWd.run('cancelled', null, 'recovery released', this.now(), w.id);
+        }
+        this._emit('me', w.address);
+      }
+      this.db.prepare("UPDATE alerts SET status = 'resolved', resolution = ? WHERE id = ?").run(action, id);
+      return this.alerts('all').find((x) => x.id === Number(id));
+    });
+  }
 
   /** Admin: mark a pending withdrawal as being paid (call before signing the payout). */
-  lockWithdrawal(id) {
+  lockWithdrawal(id, info = {}) {
     return this.tx(() => {
       const w = this.s.wd.get(id);
       if (!w) throw new AppError('NOT_FOUND', 'Withdrawal not found', 404);
       if (w.status !== 'pending') throw new AppError('NOT_PENDING', 'Withdrawal is not pending');
-      this.db.prepare('UPDATE withdrawals SET processing_at = COALESCE(processing_at, ?), updated_at = ? WHERE id = ?').run(this.now(), this.now(), id);
+      this.db.prepare('UPDATE withdrawals SET processing_at = COALESCE(processing_at, ?), lock_blockhash = COALESCE(?, lock_blockhash), lock_lvbh = MAX(COALESCE(lock_lvbh, 0), COALESCE(?, 0)), updated_at = ? WHERE id = ?')
+        .run(this.now(), info.blockhash ?? null, info.lastValidBlockHeight ?? null, this.now(), id);
       return this.withdrawalView(this.s.wd.get(id));
     });
   }
@@ -877,6 +939,7 @@ export class Engine extends EventEmitter {
       id: n(w.id), amount: fmtUsdt(B(w.amount)), to: w.to_addr, status: w.status, txHash: w.tx_hash || null,
       ...(w.token ? { token: w.token, signature: w.tx_hash || null } : {}), at: n(w.created_at), reason: w.reason || null,
       processing: !!w.processing_at,
+      ...(w.lock_lvbh ? { lock: { blockhash: w.lock_blockhash, lastValidBlockHeight: n(w.lock_lvbh) } } : {}),
     };
   }
 

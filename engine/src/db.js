@@ -89,5 +89,13 @@ export function openDb(file) {
   const cols = db.prepare('PRAGMA table_info(withdrawals)').all().map((c) => c.name);
   if (!cols.includes('token')) db.exec('ALTER TABLE withdrawals ADD COLUMN token TEXT');
   if (!cols.includes('processing_at')) db.exec('ALTER TABLE withdrawals ADD COLUMN processing_at INTEGER');
+  if (!cols.includes('lock_blockhash')) db.exec('ALTER TABLE withdrawals ADD COLUMN lock_blockhash TEXT');
+  if (!cols.includes('lock_lvbh')) db.exec('ALTER TABLE withdrawals ADD COLUMN lock_lvbh INTEGER');
+  if (!cols.includes('recovery_for')) db.exec('ALTER TABLE withdrawals ADD COLUMN recovery_for INTEGER');
+  db.exec(`CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL, address TEXT NOT NULL, token TEXT,
+    amount INTEGER NOT NULL, held INTEGER NOT NULL, shortfall INTEGER NOT NULL, signature TEXT, withdrawal_id INTEGER,
+    hold_withdrawal_id INTEGER, status TEXT NOT NULL, resolution TEXT
+  )`);
   return db;
 }

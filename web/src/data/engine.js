@@ -56,6 +56,7 @@ export const ERRORS = {
   TX_NOT_FOUND: "The transaction isn't finalized yet. Try again in a few seconds.",
   TX_MISMATCH: "That transaction doesn't match this withdrawal.",
   BAD_INPUT: "Check the amount and try again.",
+  PAYOUT_MAY_LAND: "A payout may still land — try again in ~2 minutes.",
   MIN_AMOUNT: "That amount is below the minimum.",
   RATE_LIMITED: "Too many requests. Wait a moment and try again.",
 };
@@ -255,7 +256,7 @@ export function useEngineExchange() {
     cancelWithdraw: act("cancelWithdraw", () => "Cancel vault withdrawal", () => post("/vault/cancel-withdraw")),
     withdraw: act("withdraw", () => "Withdraw from vault", () => post("/vault/withdraw")),
     requestPayout: act("payout", ({ amount, token = "USDC" }) => `Withdrawal request for ${amount} ${token}`, ({ amount, token = "USDC" }) => post("/withdrawals", { amount: str(big(amount)), token })),
-    cancelPayout: act("cancelPayout", () => "Cancel withdrawal", ({ id }) => post(`/withdrawals/${id}/cancel`)),
+    cancelPayout: act("cancelPayout", () => "Cancel withdrawal", ({ id }) => post(`/withdrawals/${id}/cancel`).catch((e) => { if (e.code === "WITHDRAW_LOCKED") e.message = "Being paid — can't cancel."; throw e; })),
     depositOnChain: async ({ amount, token = "USDC" }) => {
       // SPL transferChecked(user ATA → company ATA) from the connected wallet
       if (!account || !wcRaw.entry) { wcRaw.openPicker(); return null; }
@@ -289,9 +290,10 @@ export function useEngineExchange() {
     const have = Number(b.tokens?.[token] ?? b[token] ?? NaN);
     if (Number.isFinite(have) && have < amount) throw new Error(`Not enough ${token} in your wallet: you have ${have.toLocaleString()} ${token}.`);
   }
-  async function sendTransfer({ from, toOwner, token, units }) {
+  async function sendTransfer({ from, toOwner, token, units, beforeSign }) {
     const { blockhash, lastValidBlockHeight } = await call("/chain/blockhash");
     const bytes = buildSplTransfer({ from, toOwner, mint: token.mint, decimals: token.decimals, units, blockhash, lastValidBlockHeight });
+    if (beforeSign) await beforeSign({ blockhash, lastValidBlockHeight }); // e.g. admin lock bound to this exact blockhash
     const e = wcRaw.entry;
     if (e.canSignAndSend()) return e.signAndSend(bytes, wcRaw.chain);
     if (!hasFeature("chain/send")) throw new Error(`${e.name} can't send transactions from this page. Use Phantom, Solflare or Backpack.`);
@@ -311,11 +313,11 @@ export function useEngineExchange() {
         setBusy("pay:" + w.id);
         const t = (cfg.tokens || []).find((x) => x.symbol === (w.token || "USDC"));
         const units = ethers.parseUnits(String(w.amount), t.decimals);
-        // lock first so the user can't cancel while the payment is being signed
-        await call(`/admin/withdrawals/${w.id}/lock`, { method: "POST", token });
         const id = push({ kind: "pending", text: `Pay ${w.amount} ${t.symbol} to ${short(w.to)} — confirm in wallet` });
         let sig;
-        try { sig = await sendTransfer({ from: account, toOwner: w.to, token: t, units }); } catch (e) { dismiss(id); throw e; }
+        // lock (bound to the payout's blockhash) before signing, so the user can't cancel and no double payout can land
+        const lock = (bh) => call(`/admin/withdrawals/${w.id}/lock`, { method: "POST", body: bh, token });
+        try { sig = await sendTransfer({ from: account, toOwner: w.to, token: t, units, beforeSign: lock }); } catch (e) { dismiss(id); throw e; }
         patch(id, { text: "Payment sent — reporting to the exchange", hash: sig });
         const isPaid = async () => { const l = await call("/admin/withdrawals?status=paid", { token }).catch(() => []); return Array.isArray(l) && l.some((x) => String(x.id) === String(w.id)); };
         let done = await isPaid();

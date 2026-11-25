@@ -86,7 +86,7 @@ export class Auth {
     });
     tx.immediate();
     const expiresAt = now + SESSION_TTL;
-    return { token: this.sign({ a: addr, e: expiresAt }), expiresAt, isAdmin: addr === this.company };
+    return { token: this.sign({ a: addr, c: this.chain, e: expiresAt }), expiresAt, isAdmin: addr === this.company };
   }
 
   sign(payload) {
@@ -107,6 +107,9 @@ export class Auth {
     let p;
     try { p = JSON.parse(Buffer.from(body, 'base64url').toString()); } catch { return null; }
     if (!p || typeof p.a !== 'string' || typeof p.e !== 'number' || p.e <= this.now()) return null;
+    // Bind sessions to the chain: tokens minted under another chain (e.g. EVM-era, same secret) are refused.
+    if (p.c !== this.chain) return null;
+    try { if (this.scheme.norm(p.a) !== p.a) return null; } catch { return null; }
     return { address: p.a, isAdmin: p.a === this.company };
   }
 }

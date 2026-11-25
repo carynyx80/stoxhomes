@@ -13,7 +13,8 @@ export default function AdminPage({ ex }) {
   const load = useCallback(async () => {
     if (!ex.isAdmin) return;
     try {
-      const [o, w] = await Promise.all([ex.admin.call("/admin/overview"), ex.admin.call("/admin/withdrawals?status=pending")]);
+      const [o, w, u] = await Promise.all([ex.admin.call("/admin/overview"), ex.admin.call("/admin/withdrawals?status=pending"), ex.admin.call("/admin/deposits?status=unattributed").catch(() => null)]);
+      if (Array.isArray(u)) o.unattributedDeposits = u; else if (u && Array.isArray(u.deposits)) o.unattributedDeposits = u.deposits;
       setOv(o); setRows(Array.isArray(w) ? w : w.withdrawals || []); setErr(null);
     } catch (e) { setErr(e.message); }
   }, [ex.isAdmin, ex.session?.token]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -45,6 +46,7 @@ export default function AdminPage({ ex }) {
   return (
     <div className="admin">
       {err && <div className="errbar">{err}</div>}
+      {(ov?.alerts || []).map((a, i) => <div key={i} className="errbar alert">{typeof a === "string" ? a : a.message || JSON.stringify(a)}</div>)}
       <section className="panel ov">
         <div className="sec-head"><h3>Treasury</h3><span className="sub">Company wallet {short(ex.config.companyAddress)}</span></div>
         <div className="ov-grid">
@@ -97,6 +99,15 @@ export default function AdminPage({ ex }) {
           </div>
         )}
       </section>
+
+      {(ov?.unmatchedPayouts || []).length > 0 && (
+        <section className="panel">
+          <div className="sec-head"><h3>Unmatched payouts</h3><span className="count">{ov.unmatchedPayouts.length}</span><span className="sub">Outgoing transfers not matched to a withdrawal</span></div>
+          <div className="tbl awd">{ov.unmatchedPayouts.map((x) => (
+            <div className="tr" key={x.signature}><span>{x.at ? when(x.at) : "—"}</span><span><a href={`https://solscan.io/tx/${x.signature}`} target="_blank" rel="noreferrer"><code>{short(x.signature)}</code></a></span><span><b>{usd(Number(x.amount))} {x.token || ""}</b></span><span>{short(x.to || x.recipient || "")}</span></div>
+          ))}</div>
+        </section>
+      )}
 
       <div className="admin-forms">
         <Form title="Post index print" fields={[["symbol", "select", markets.map((m) => m.symbol)], ["value", "number"], ["source", "text", "e.g. S&P CoreLogic Case-Shiller, Oct"]]}

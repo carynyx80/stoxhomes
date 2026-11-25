@@ -176,11 +176,18 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
     return rows.map((w) => ({ ...engine.withdrawalView(w), address: w.address }));
   }));
   app.post('/admin/withdrawals/:id/paid', admin, h((req) => watcher.markPaid(posInt(req.params.id, 'id'), body(req))));
-  app.post('/admin/withdrawals/:id/lock', admin, h((req) => engine.lockWithdrawal(posInt(req.params.id, 'id'))));
+  app.post('/admin/withdrawals/:id/lock', admin, h((req) => engine.lockWithdrawal(posInt(req.params.id, 'id'), watcher.lockInfo(body(req)))));
+  app.get('/admin/alerts', admin, h((req) => engine.alerts(req.query.status === 'all' ? 'all' : 'open')));
+  app.post('/admin/alerts/:id/resolve', admin, h((req) => engine.resolveAlert(posInt(req.params.id, 'id'), body(req).action)));
   app.post('/admin/withdrawals/:id/reject', admin, h((req) => {
     const reason = body(req).reason;
     if (reason !== undefined && (typeof reason !== 'string' || reason.length > 500)) throw new AppError('BAD_INPUT', 'reason must be a string');
-    return engine.rejectWithdrawal(posInt(req.params.id, 'id'), reason);
+    const id = posInt(req.params.id, 'id');
+    const w = db.prepare('SELECT * FROM withdrawals WHERE id = ?').get(id);
+    if (w && w.status === 'pending' && w.processing_at) {
+      return watcher.verifyUnlock(w).then(() => engine.rejectWithdrawal(id, reason, { unlockVerified: true }));
+    }
+    return engine.rejectWithdrawal(id, reason);
   }));
   app.post('/admin/index', admin, h((req) => {
     const b = body(req);

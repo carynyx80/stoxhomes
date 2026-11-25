@@ -98,7 +98,8 @@ function Deposit({ ex }) {
           {tracked?.status === "credited"
             ? <p className="up">Credited {usd(Number(tracked.amount))} to your balance ✓</p>
             : tracked?.status === "below_minimum" ? <p className="dn">Below the minimum deposit — contact support.</p>
-            : <><p>{tracked ? "Confirming — waiting for finalization…" : "Waiting for the exchange to see the transfer…"}</p>
+            : tracked?.status === "unattributed" ? <p className="dn">Received but not attributed automatically — support will review it.</p>
+            : <><p>Waiting for Solana finalization…</p>
                 <div className="pend-bar dark indet"><i style={{ width: tracked ? "60%" : "15%" }} /></div></>}
           <TxLink hash={sent} explorer={ex.explorer} />
         </div>
@@ -140,7 +141,7 @@ function Withdraw({ ex }) {
             <li key={w.id}>
               <span>{when(w.at)}</span><b>{usd(Number(w.amount))} {w.token || ""}</b>
               <em className={w.status === "paid" ? "up" : w.status === "rejected" ? "dn" : ""}>{w.status}</em>
-              {w.status === "pending" ? <button className="mini" disabled={!!ex.busy} onClick={() => ex.actions.cancelPayout({ id: w.id })}>Cancel</button> : <TxLink hash={w.signature || w.txHash} explorer={ex.explorer} />}
+              {w.status === "pending" && (w.locked || w.lockedAt || w.paying) ? <em>Being paid — can't cancel</em> : w.status === "pending" ? <button className="mini" disabled={!!ex.busy} onClick={() => ex.actions.cancelPayout({ id: w.id })}>Cancel</button> : <TxLink hash={w.signature || w.txHash} explorer={ex.explorer} />}
             </li>
           ))}
         </ul>

@@ -96,7 +96,7 @@ function meView(a) {
   const vv = (u.vaultShares + u.pendingShares) * sharePrice();
   return { address: a, balance: { available: s(u.available), margin: s(margin), pendingWithdrawals: s(pend), vaultValue: s(vv), equity: s(u.available + margin + upnl + pend + vv) }, vault: { shares: s(u.vaultShares, 8), pendingShares: s(u.pendingShares, 8), unlockAt: u.unlockAt } };
 }
-const wView = (w) => ({ id: w.id, amount: s(w.amount), token: w.token || "USDC", to: w.address, status: w.status, signature: w.txHash || null, txHash: w.txHash || null, at: w.at, reason: w.reason || null });
+const wView = (w) => ({ locked: !!w.locked, id: w.id, amount: s(w.amount), token: w.token || "USDC", to: w.address, status: w.status, signature: w.txHash || null, txHash: w.txHash || null, at: w.at, reason: w.reason || null });
 function trade(p, kind, size, price, lev) {
   const t = { id: String(tid++), at: now(), marketId: p.marketId, side: p.size > 0 || size > 0 ? "long" : "short", kind, size: s(size, 8), price: s(price), notional: s(Math.abs(size) * price), leverage: lev ? s(lev, 1) : null, trader: p.trader };
   trades.unshift(t); MARKETS[p.marketId].vol24 += Math.abs(size) * price; broadcast({ type: "trade", data: pubTrade(t) }); return t;
@@ -211,7 +211,7 @@ const routes = {
     }
     w.status = "paid"; w.txHash = body.txHash; notify(w.address, "withdrawal"); return wView(w);
   },
-  "POST /admin/withdrawals/:id/lock": ({ params }) => { const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending"); w.locked = true; return wView(w); },
+  "POST /admin/withdrawals/:id/lock": ({ params }) => { const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending"); if (SOL && !body.blockhash) throw fail("BAD_INPUT", "blockhash required"); w.locked = true; w.lockBlockhash = body.blockhash; return wView(w); },
   "POST /admin/withdrawals/:id/reject": ({ params, body }) => { const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending"); w.status = "rejected"; w.reason = body.reason; user(w.address).available += w.amount; notify(w.address, "withdrawal"); return wView(w); },
   "POST /admin/index": ({ body }) => { const m = MARKETS.find((x) => x.symbol === body.symbol); const v = Number(body.value); if (!m || !(v > 0)) throw fail("BAD_PARAM", "Unknown market or value"); if (Math.abs(v / m.index - 1) > 0.1) throw fail("BAD_PARAM", "Print moves more than 10%"); m.target = v; m.lastPrint = { value: s(v), at: now() }; m.nextPrintAt = null; hist[m.id].push({ at: now(), value: s(v, 2) }); return marketView(m); },
   "POST /admin/schedule-print": ({ body }) => { const m = MARKETS.find((x) => x.symbol === body.symbol); if (!m) throw fail("BAD_PARAM", "Unknown market"); m.nextPrintAt = Number(body.at); return marketView(m); },
