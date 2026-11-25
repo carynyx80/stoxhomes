@@ -44,28 +44,30 @@
       {
         "symbol": "NYC",
         "name": "New York",
-        "index": 330
+        "index": 351.78
       },
       {
         "symbol": "LA",
         "name": "Los Angeles",
-        "index": 440
+        "index": 446.2
       },
       {
         "symbol": "MIA",
         "name": "Miami",
-        "index": 430
+        "index": 454.64
       },
       {
         "symbol": "SF",
         "name": "San Francisco",
-        "index": 350
+        "index": 367.95
       },
       {
         "symbol": "LDN",
         "name": "London",
-        "index": 290
+        "index": 95.6
       }
-    ]
+    ],
+    "owner": "0x106342ec570E207afDa9fDA63125d7a9071127f2",
+    "feeRecipient": "0x106342ec570E207afDa9fDA63125d7a9071127f2"
   }
 }

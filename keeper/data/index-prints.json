@@ -1,7 +1,7 @@
 [
-  { "symbol": "NYC", "date": "2026-09-30", "value": 330 },
-  { "symbol": "LA", "date": "2026-09-30", "value": 440 },
-  { "symbol": "MIA", "date": "2026-09-30", "value": 430 },
-  { "symbol": "SF", "date": "2026-09-30", "value": 350 },
-  { "symbol": "LDN", "date": "2026-09-30", "value": 290 }
+  { "symbol": "NYC", "date": "2026-09-01", "value": 351.78, "source": "S&P Cotality Case-Shiller NY, SA (FRED NYXRSA), Sep 2026" },
+  { "symbol": "LA", "date": "2026-09-01", "value": 446.20, "source": "S&P Cotality Case-Shiller LA, SA (FRED LXXRSA), Sep 2026" },
+  { "symbol": "MIA", "date": "2026-09-01", "value": 454.64, "source": "S&P Cotality Case-Shiller Miami, SA (FRED MIXRSA), Sep 2026" },
+  { "symbol": "SF", "date": "2026-09-01", "value": 367.95, "source": "S&P Cotality Case-Shiller SF, SA (FRED SFXRSA), Sep 2026" },
+  { "symbol": "LDN", "date": "2026-09-01", "value": 95.6, "source": "UK HPI London, all property types, Jan 2023=100 (HM Land Registry), Sep 2026" }
 ]

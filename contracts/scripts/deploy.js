@@ -8,14 +8,16 @@ const { ethers, network, artifacts } = require("hardhat");
 
 const E = (n) => ethers.parseEther(String(n));
 
-// Sample starting index levels (not live data). Replace with real published values
-// from your index provider before launch.
+// Default starting levels: latest published values as of 2026-11-25 (September 2026 data).
+// US: S&P Cotality Case-Shiller, seasonally adjusted (FRED NYXRSA, LXXRSA, MIXRSA, SFXRSA).
+// London: UK HPI, all property types, Jan 2023 = 100 (HM Land Registry).
+// Mainnet deploys must still pass INITIAL_INDEX_JSON/INITIAL_INDEX_FILE explicitly.
 const MARKETS = [
-  { symbol: "NYC", name: "New York", index: 330 },
-  { symbol: "LA", name: "Los Angeles", index: 440 },
-  { symbol: "MIA", name: "Miami", index: 430 },
-  { symbol: "SF", name: "San Francisco", index: 350 },
-  { symbol: "LDN", name: "London", index: 290 },
+  { symbol: "NYC", name: "New York", index: 351.78 },
+  { symbol: "LA", name: "Los Angeles", index: 446.2 },
+  { symbol: "MIA", name: "Miami", index: 454.64 },
+  { symbol: "SF", name: "San Francisco", index: 367.95 },
+  { symbol: "LDN", name: "London", index: 95.6 },
 ];
 
 // Company wallet: becomes owner of the oracle and exchange and receives protocol fees,
