@@ -61,7 +61,7 @@ function standardAdapter(w) {
   let account = null;
   return {
     id: "std:" + w.name, name: w.name, icon: w.icon || null, kind: "standard", raw: w,
-    // NOTE: not async on purpose — standard:connect is invoked synchronously inside the click handler,
+    // NOTE: not async on purpose: standard:connect is invoked synchronously inside the click handler,
     // otherwise some browsers/wallets drop the popup (user-activation is lost after an await).
     connect(silent) {
       if (!f["standard:connect"]) return Promise.reject(new Error("This wallet can't connect"));
@@ -190,7 +190,7 @@ export function useSolanaWallet(notify, { chain = "solana:mainnet" } = {}) {
     inflight.current = true; setPending("connect");
     let timer;
     try {
-      const call = w.connect(false); // invoked synchronously in the click handler — keeps the popup alive
+      const call = w.connect(false); // invoked synchronously in the click handler, keeps the popup alive
       const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${w.name} didn't respond. Open the extension (it may be locked) and try again.`)), CONNECT_TIMEOUT_MS); });
       const a = await Promise.race([call, timeout]);
       if (!a) throw Object.assign(new Error("User rejected the request."), { code: 4001 });

@@ -44,6 +44,7 @@ export default function Landing({ ex, enter }) {
           <p className="lp-lede lp-rise" style={{ "--d": "180ms" }}>Go long or short on home prices in New York, Los Angeles, Miami, San Francisco and London. Deposit USDC or USDT from a Solana wallet and trade a whole city in one click.</p>
           <div className="lp-ctas lp-rise" style={{ "--d": "270ms" }}>
             <a className="lp-cta" href="/app" onClick={go("trade")}>Enter app <span aria-hidden="true">→</span></a>
+            <a className="lp-cta2 lp-practice" href="/app" onClick={(e) => { e.preventDefault(); ex?.setMode?.("practice"); enter("trade"); }}>Try it with play money</a>
             <a className="lp-cta2" href="#how">How it works</a>
           </div>
           {markets && <dl className="lp-kpis lp-rise" style={{ "--d": "360ms" }}>

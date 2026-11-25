@@ -159,7 +159,7 @@ export function ConnectButton({ ex, onFunds, className = "" }) {
   }
   return (
     <span className={"connect-group " + className} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-      <button className="faucet balbtn" onClick={() => onFunds?.("deposit")} title="Deposit or withdraw">{money(ex.wallet.balance)} <small>available</small></button>
+      <button className={"faucet balbtn" + (ex.practice ? " practice" : "")} onClick={() => (ex.practice ? ex.actions.faucet() : onFunds?.("deposit"))} title={ex.practice ? "Practice balance (play money)" : "Deposit or withdraw"}>{ex.practice && <em className="pchip">PRACTICE</em>}{money(ex.wallet.balance)} <small>available</small></button>
       <button className="wallet" title={ex.wallet.full} onClick={() => wc.openPicker()}>{shortA(ex.wallet.full)}</button>
     </span>
   );

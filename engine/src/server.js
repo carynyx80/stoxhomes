@@ -32,11 +32,50 @@ const posInt = (v, field) => {
   return Number(v);
 };
 
+/** Merge historical monthly prints with the engine's own prints, filtered by range, sorted, de-duplicated by time. */
+export function mergePrints(own, histPrints, range, nowSec) {
+  const days = { '1M': 30, '6M': 182, '1Y': 365, '5Y': 1826, ALL: Infinity }[range];
+  const since = days === Infinity ? -Infinity : nowSec - days * 86400;
+  const norm = (x) => {
+    if (!x) return null;
+    let at = x.at ?? x.t ?? x.time;
+    if (at === undefined && (x.date || x.month)) at = Math.floor(Date.parse(x.date || `${x.month}-01`) / 1000);
+    const value = x.value ?? x.v ?? x.price;
+    if (!Number.isFinite(Number(at)) || value === undefined || value === null) return null;
+    return { at: Number(at), value: String(value), source: 'historical' };
+  };
+  const histOut = (Array.isArray(histPrints) ? histPrints : []).map(norm).filter(Boolean);
+  const firstOwn = own.length ? Math.min(...own.map((p) => p.at)) : Infinity;
+  const merged = [...histOut.filter((p) => p.at < firstOwn), ...own].filter((p) => p.at >= since);
+  merged.sort((a, b) => a.at - b.at);
+  return merged;
+}
+
 export function createApp(config, { now, rpc, log = console.log } = {}) {
   const nowFn = now || (() => Math.floor(Date.now() / 1000));
   const db = openDb(config.dbPath);
-  const engine = new Engine({ db, companyAddress: config.companyAddress, now: nowFn }).init();
+  const engine = new Engine({ db, companyAddress: config.companyAddress, now: nowFn, skewScale: config.skewScale }).init();
+  // Practice mode: a fully separate engine + SQLite file. No watcher, no deposits/withdrawals; prices mirror the real engine.
+  let practice = null;
+  let practiceDb = null;
+  if (config.practiceEnabled) {
+    practiceDb = openDb(config.practiceDbPath);
+    practice = new Engine({ db: practiceDb, companyAddress: config.companyAddress, now: nowFn, skewScale: config.skewScale, practice: true }).init();
+    practice.mirrorFeedsFrom(engine);
+    if (practice.totalShares() === 0n && practice.balance('vault') === 0n) practice.seedVault(config.practiceSeed);
+  }
+  const mirror = () => { if (practice) practice.mirrorFeedsFrom(engine); };
   const solana = config.chain === 'solana';
+  // engine/src/historical.js is maintained separately; load it lazily and retry until it exists.
+  let historical = null;
+  let historicalTriedAt = 0;
+  const loadHistorical = async () => {
+    if (historical) return historical;
+    if (Date.now() - historicalTriedAt < 30_000) return null;
+    historicalTriedAt = Date.now();
+    try { historical = await import('./historical.js'); } catch (e) { if (e.code !== 'ERR_MODULE_NOT_FOUND') log(`historical.js failed to load: ${e.message}`); }
+    return historical;
+  };
   rpc = rpc || (solana ? new SolRpc(config.rpcUrls, { log }) : new Rpc(config.rpcUrls, { log }));
   const watcher = solana ? new SolanaAdapter({ engine, rpc, config, log }) : new Watcher({ engine, rpc, config, log });
   const auth = new Auth({ db, secret: config.sessionSecret, domain: config.allowedDomain, chainId: config.chainId, companyAddress: config.companyAddress, now: nowFn, chain: solana ? 'solana' : 'evm' });
@@ -82,6 +121,75 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   };
   const body = (req) => (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {});
 
+  const safe = (fn) => { try { return fn(); } catch (e) { log(`historical: ${e.message}`); return null; } };
+  const numStr = (v) => (v === null || v === undefined || (typeof v === 'number' && !Number.isFinite(v)) ? null : String(v));
+  const tradingState = (eng) => (eng.poolValue() > 0n ? { tradingOpen: true } : { tradingOpen: false, reason: 'liquidity' });
+
+  /** Engine-generic REST routes, mounted for the real engine at / and the practice engine at /practice. */
+  const engineRoutes = (r, eng) => {
+    r.get('/markets', h(async () => {
+      const hist = await loadHistorical();
+      const open = tradingState(eng);
+      return eng.marketsView().map((m) => ({ ...m, change1y: hist ? numStr(safe(() => hist.changeOver(m.symbol, 12))) : null, ...open }));
+    }));
+    r.get('/markets/:id/history', h(async (req) => {
+      const range = String(req.query.range || '1M');
+      const out = eng.history(marketIdOf(req.params.id), range);
+      const hist = await loadHistorical();
+      if (hist) out.prints = mergePrints(out.prints, safe(() => hist.getMonthlyPrints(eng.resolveMarket(marketIdOf(req.params.id)).symbol)), range, eng.now());
+      return out;
+    }));
+    r.get('/markets/:id/trades', h((req) => {
+      const limit = req.query.limit === undefined ? 50 : posInt(String(req.query.limit), 'limit');
+      return eng.trades(marketIdOf(req.params.id), Math.min(Math.max(limit, 1), 500));
+    }));
+    r.get('/quote', h((req) => {
+      const size = parseSignedWad(String(req.query.size ?? ''), 'size');
+      if (size === 0n) throw new AppError('BAD_INPUT', 'size must be non-zero');
+      const q = eng.quote(marketIdOf(String(req.query.marketId ?? '')), size);
+      return { fillPrice: fmtWad(q.fillPrice), fee: fmtUsdt(q.fee), closeFillPrice: fmtWad(q.closeFillPrice) };
+    }));
+    r.get('/vault', h(() => eng.vaultView()));
+    r.get('/stats', h(() => eng.stats()));
+    r.get('/me', authed, h((req) => eng.me(req.user.address)));
+    r.get('/me/positions', authed, h((req) => eng.positions(req.user.address)));
+    r.get('/me/history', authed, h((req) => eng.userHistory(req.user.address)));
+    r.post('/positions/open', authed, h((req) => {
+      const b = body(req);
+      return eng.openPosition(req.user.address, {
+        marketId: marketIdOf(b.marketId), size: parseSignedWad(reqStr(b.size, 'size'), 'size'),
+        margin: parseUsdt(reqStr(b.margin, 'margin'), 'margin'), acceptablePrice: parseWad(reqStr(b.acceptablePrice, 'acceptablePrice'), 'acceptablePrice'),
+      });
+    }));
+    r.post('/positions/modify', authed, h((req) => {
+      const b = body(req);
+      const r = eng.modifyPosition(req.user.address, {
+        marketId: marketIdOf(b.marketId), sizeDelta: parseSignedWad(reqStr(b.sizeDelta, 'sizeDelta'), 'sizeDelta'),
+        acceptablePrice: parseWad(reqStr(b.acceptablePrice, 'acceptablePrice'), 'acceptablePrice'),
+      });
+      return r || { closed: true };
+    }));
+    r.post('/positions/close', authed, h((req) => {
+      const b = body(req);
+      const r = eng.closePosition(req.user.address, { marketId: marketIdOf(b.marketId), acceptablePrice: parseWad(reqStr(b.acceptablePrice, 'acceptablePrice'), 'acceptablePrice') });
+      return { realizedPnl: fmtUsdt(r.realizedPnl), payout: fmtUsdt(r.payout) };
+    }));
+    r.post('/positions/margin', authed, h((req) => {
+      const b = body(req);
+      const s = reqStr(b.delta, 'delta');
+      const neg = s.startsWith('-');
+      const d = parseUsdt(neg ? s.slice(1) : s, 'delta');
+      return eng.changeMargin(req.user.address, { marketId: marketIdOf(b.marketId), delta: neg ? -d : d });
+    }));
+    r.post('/vault/deposit', authed, h((req) => {
+      const r = eng.vaultDeposit(req.user.address, parseUsdt(reqStr(body(req).amount, 'amount')));
+      return { shares: formatUnits(r.shares, 12) };
+    }));
+    r.post('/vault/request-withdraw', authed, h((req) => eng.vaultRequestWithdraw(req.user.address, parseShares(reqStr(body(req).shares, 'shares')))));
+    r.post('/vault/cancel-withdraw', authed, h((req) => eng.vaultCancelWithdraw(req.user.address)));
+    r.post('/vault/withdraw', authed, h((req) => ({ amount: fmtUsdt(eng.vaultWithdraw(req.user.address).amount) })));
+  };
+
   // ---------------------------------------------------------------- auth
   app.post('/auth/nonce', h((req) => auth.createNonce(body(req).address)));
   app.post('/auth/verify', h((req) => auth.verify(body(req))));
@@ -94,64 +202,16 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
       liquidationFeeBps: Number(PARAMS.liquidationFeeBps), maxLeverage: Number(PARAMS.maxLeverage),
     },
     markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })),
+    practiceAvailable: !!practice,
+    ...tradingState(engine),
   })));
-  app.get('/markets', h(() => engine.marketsView()));
-  app.get('/markets/:id/history', h((req) => engine.history(marketIdOf(req.params.id), String(req.query.range || '1M'))));
-  app.get('/markets/:id/trades', h((req) => {
-    const limit = req.query.limit === undefined ? 50 : posInt(String(req.query.limit), 'limit');
-    return engine.trades(marketIdOf(req.params.id), Math.min(Math.max(limit, 1), 500));
-  }));
-  app.get('/quote', h((req) => {
-    const size = parseSignedWad(String(req.query.size ?? ''), 'size');
-    if (size === 0n) throw new AppError('BAD_INPUT', 'size must be non-zero');
-    const q = engine.quote(marketIdOf(String(req.query.marketId ?? '')), size);
-    return { fillPrice: fmtWad(q.fillPrice), fee: fmtUsdt(q.fee), closeFillPrice: fmtWad(q.closeFillPrice) };
-  }));
-  app.get('/vault', h(() => engine.vaultView()));
-  app.get('/stats', h(() => engine.stats()));
+  engineRoutes(app, engine);
   app.get('/health', (req, res) => res.json({ ok: true, ...watcher.health(), watcherError: watcher.lastError }));
 
   // ------------------------------------------------------------- account
-  app.get('/me', authed, h((req) => engine.me(req.user.address)));
   app.get('/me/deposits', authed, h((req) => watcher.depositsFor(req.user.address)));
   app.get('/me/withdrawals', authed, h((req) => db.prepare('SELECT * FROM withdrawals WHERE address = ? ORDER BY id DESC LIMIT 200').all(req.user.address).map((w) => engine.withdrawalView(w))));
-  app.get('/me/positions', authed, h((req) => engine.positions(req.user.address)));
-  app.get('/me/history', authed, h((req) => engine.userHistory(req.user.address)));
 
-  app.post('/positions/open', authed, h((req) => {
-    const b = body(req);
-    return engine.openPosition(req.user.address, {
-      marketId: marketIdOf(b.marketId), size: parseSignedWad(reqStr(b.size, 'size'), 'size'),
-      margin: parseUsdt(reqStr(b.margin, 'margin'), 'margin'), acceptablePrice: parseWad(reqStr(b.acceptablePrice, 'acceptablePrice'), 'acceptablePrice'),
-    });
-  }));
-  app.post('/positions/modify', authed, h((req) => {
-    const b = body(req);
-    const r = engine.modifyPosition(req.user.address, {
-      marketId: marketIdOf(b.marketId), sizeDelta: parseSignedWad(reqStr(b.sizeDelta, 'sizeDelta'), 'sizeDelta'),
-      acceptablePrice: parseWad(reqStr(b.acceptablePrice, 'acceptablePrice'), 'acceptablePrice'),
-    });
-    return r || { closed: true };
-  }));
-  app.post('/positions/close', authed, h((req) => {
-    const b = body(req);
-    const r = engine.closePosition(req.user.address, { marketId: marketIdOf(b.marketId), acceptablePrice: parseWad(reqStr(b.acceptablePrice, 'acceptablePrice'), 'acceptablePrice') });
-    return { realizedPnl: fmtUsdt(r.realizedPnl), payout: fmtUsdt(r.payout) };
-  }));
-  app.post('/positions/margin', authed, h((req) => {
-    const b = body(req);
-    const s = reqStr(b.delta, 'delta');
-    const neg = s.startsWith('-');
-    const d = parseUsdt(neg ? s.slice(1) : s, 'delta');
-    return engine.changeMargin(req.user.address, { marketId: marketIdOf(b.marketId), delta: neg ? -d : d });
-  }));
-  app.post('/vault/deposit', authed, h((req) => {
-    const r = engine.vaultDeposit(req.user.address, parseUsdt(reqStr(body(req).amount, 'amount')));
-    return { shares: formatUnits(r.shares, 12) };
-  }));
-  app.post('/vault/request-withdraw', authed, h((req) => engine.vaultRequestWithdraw(req.user.address, parseShares(reqStr(body(req).shares, 'shares')))));
-  app.post('/vault/cancel-withdraw', authed, h((req) => engine.vaultCancelWithdraw(req.user.address)));
-  app.post('/vault/withdraw', authed, h((req) => ({ amount: fmtUsdt(engine.vaultWithdraw(req.user.address).amount) })));
   app.post('/withdrawals', authed, h((req) => engine.requestWithdrawal(req.user.address, parseUsdt(reqStr(body(req).amount, 'amount')), config.minWithdraw, watcher.withdrawToken(body(req).token))));
   app.post('/withdrawals/:id/cancel', authed, h((req) => engine.cancelWithdrawal(req.user.address, posInt(req.params.id, 'id'))));
 
@@ -166,8 +226,20 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
       surplus: fmtUsdt(onchain - l.total),
       pendingWithdrawals: { count: Number(p.c), amount: fmtUsdt(BigInt(p.s)) },
       ledgerOk: ledger.ok,
+      setup: setupChecklist(fields, onchain, l),
     };
   }));
+  /** What the company still has to do before real trading can open. */
+  const setupChecklist = (fields, onchain, l) => {
+    const vaultValue = engine.poolValue();
+    const minSol = 0.05;
+    const sol = fields.companySol !== undefined ? fields.companySol : null;
+    return {
+      solOk: sol === null ? null : Number(sol) >= minSol, sol, minSol: String(minSol),
+      capitalOk: onchain > 0n && onchain >= l.total, companyOnChain: fmtUsdt(onchain), liabilities: fmtUsdt(l.total),
+      vaultSeeded: vaultValue > 0n, vaultValue: fmtUsdt(vaultValue),
+    };
+  };
   app.get('/admin/withdrawals', admin, h((req) => {
     const status = String(req.query.status || 'pending');
     if (!['pending', 'paid', 'rejected', 'cancelled', 'all'].includes(status)) throw new AppError('BAD_INPUT', 'bad status');
@@ -192,12 +264,16 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   app.post('/admin/index', admin, h((req) => {
     const b = body(req);
     if (b.source !== undefined && (typeof b.source !== 'string' || b.source.length > 200)) throw new AppError('BAD_INPUT', 'source must be a string');
-    return engine.pushIndex(marketIdOf(reqStr(b.symbol, 'symbol')), parseWad(reqStr(b.value, 'value'), 'value'), b.source || 'admin');
+    const r = engine.pushIndex(marketIdOf(reqStr(b.symbol, 'symbol')), parseWad(reqStr(b.value, 'value'), 'value'), b.source || 'admin');
+    mirror();
+    return r;
   }));
   app.post('/admin/schedule-print', admin, h((req) => {
     const b = body(req);
     if (!Number.isInteger(b.at) || b.at < 0) throw new AppError('BAD_INPUT', 'at must be a unix timestamp (0 cancels)');
-    return engine.schedulePrint(marketIdOf(reqStr(b.symbol, 'symbol')), b.at);
+    const r = engine.schedulePrint(marketIdOf(reqStr(b.symbol, 'symbol')), b.at);
+    mirror();
+    return r;
   }));
   app.post('/admin/markets/:id', admin, h((req) => {
     const b = body(req);
@@ -211,10 +287,34 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   watcher.extraRoutes(app, { authed, admin, h, body });
   app.get('/admin/ledger-check', admin, h(() => { const c = engine.checkLedger(); return { ok: c.ok, total: c.total.toString(), errors: c.errors }; }));
 
+  if (practice) {
+    const pr = express.Router();
+    const practiceOnly = () => { throw new AppError('PRACTICE_ONLY', 'Practice mode uses play money: deposits and withdrawals are disabled'); };
+    pr.get('/config', h(() => ({
+      practice: true, chain: config.chain, faucetAmount: fmtUsdt(config.faucetAmount), faucetCooldown: 86400,
+      fees: {
+        tradingBps: Number(PARAMS.tradingFeeBps), maintenanceBps: Number(PARAMS.maintenanceMarginBps),
+        liquidationFeeBps: Number(PARAMS.liquidationFeeBps), maxLeverage: Number(PARAMS.maxLeverage),
+      },
+      markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })),
+      ...tradingState(practice),
+    })));
+    pr.get('/health', (req, res) => res.json({ ok: true, practice: true }));
+    pr.post('/faucet', authed, h((req) => {
+      const r = practice.faucet(req.user.address, config.faucetAmount);
+      return { amount: fmtUsdt(r.amount), nextAt: r.nextAt };
+    }));
+    for (const p of ['/me/deposits', '/me/withdrawals']) pr.get(p, authed, h(practiceOnly));
+    for (const p of ['/withdrawals', '/withdrawals/:id/cancel', '/deposits']) pr.post(p, authed, h(practiceOnly));
+    pr.all(/^\/admin\//, h(practiceOnly));
+    engineRoutes(pr, practice);
+    app.use('/practice', pr);
+  }
+
   app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND', message: 'Not found' }));
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
-    if (err instanceof AppError) return res.status(err.status).json({ error: err.code, message: err.message });
+    if (err instanceof AppError) return res.status(err.status).json({ error: err.code, message: err.message, ...(err.extra || {}) });
     if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'BAD_INPUT', message: 'Invalid JSON' });
     if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'BAD_INPUT', message: 'Body too large' });
     log(`internal error ${req.method} ${req.path}: ${err && err.stack}`);
@@ -224,51 +324,59 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   // ------------------------------------------------------------ server/ws
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
-  const sockets = new Set();
+  const channels = new Map(); // ws path -> { engine, sockets, meDirty }
+  const send = (ws, type, data) => { if (ws.readyState === 1) ws.send(JSON.stringify({ type, data })); };
+  const addChannel = (path, eng) => {
+    const ch = { engine: eng, sockets: new Set(), meDirty: new Set() };
+    const broadcast = (type, data) => { for (const ws of ch.sockets) send(ws, type, data); };
+    ch.toUser = (address, type, data) => { for (const ws of ch.sockets) if (ws.address === address) send(ws, type, data); };
+    ch.broadcast = broadcast;
+    eng.on('trade', (t) => broadcast('trade', t));
+    eng.on('me', (a) => ch.meDirty.add(a));
+    eng.on('deposit', (d) => ch.toUser(d.address, 'deposit', d));
+    eng.on('withdrawal', (w) => ch.toUser(w.address, 'withdrawal', w));
+    channels.set(path, ch);
+  };
+  addChannel('/ws', engine);
+  if (practice) addChannel('/practice/ws', practice);
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x');
-    if (url.pathname !== '/ws') return socket.destroy();
+    const ch = channels.get(url.pathname);
+    if (!ch) return socket.destroy();
     const origin = req.headers.origin;
     if (origin && !config.corsOrigins.includes(origin)) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
       const s = url.searchParams.get('token') ? auth.check(url.searchParams.get('token')) : null;
       ws.address = s ? s.address : null;
-      sockets.add(ws);
-      ws.on('close', () => sockets.delete(ws));
-      ws.on('error', () => sockets.delete(ws));
-      try { ws.send(JSON.stringify({ type: 'markets', data: engine.marketsView() })); } catch { /* ignore */ }
+      ch.sockets.add(ws);
+      ws.on('close', () => ch.sockets.delete(ws));
+      ws.on('error', () => ch.sockets.delete(ws));
+      try { ws.send(JSON.stringify({ type: 'markets', data: ch.engine.marketsView() })); } catch { /* ignore */ }
     });
   });
-  const send = (ws, type, data) => { if (ws.readyState === 1) ws.send(JSON.stringify({ type, data })); };
-  const broadcast = (type, data) => { for (const ws of sockets) send(ws, type, data); };
-  const toUser = (address, type, data) => { for (const ws of sockets) if (ws.address === address) send(ws, type, data); };
-
-  engine.on('trade', (t) => broadcast('trade', t));
-  const meDirty = new Set();
-  engine.on('me', (a) => meDirty.add(a));
-  engine.on('deposit', (d) => toUser(d.address, 'deposit', d));
-  engine.on('withdrawal', (w) => toUser(w.address, 'withdrawal', w));
-  const flushMe = () => {
-    for (const a of meDirty) {
-      if ([...sockets].some((ws) => ws.address === a)) {
-        try { toUser(a, 'me', { ...engine.me(a), positions: engine.positions(a) }); } catch (e) { log(`ws me error ${e.message}`); }
+  const flushMe = (ch) => {
+    for (const a of ch.meDirty) {
+      if ([...ch.sockets].some((ws) => ws.address === a)) {
+        try { ch.toUser(a, 'me', { ...ch.engine.me(a), positions: ch.engine.positions(a) }); } catch (e) { log(`ws me error ${e.message}`); }
       }
     }
-    meDirty.clear();
+    ch.meDirty.clear();
   };
 
   let loopTimer = null;
   const tick = () => {
-    try {
-      const liq = engine.tick();
-      for (const l of liq) log(`liquidated ${l.address} market ${l.marketId}`);
-      if (sockets.size) broadcast('markets', engine.marketsView());
-      flushMe();
-    } catch (e) { log(`loop error: ${e.stack}`); }
+    for (const [path, ch] of channels) {
+      try {
+        const liq = ch.engine.tick();
+        for (const l of liq) log(`${path === '/ws' ? '' : 'practice: '}liquidated ${l.address} market ${l.marketId}`);
+        if (ch.sockets.size) ch.broadcast('markets', ch.engine.marketsView());
+        flushMe(ch);
+      } catch (e) { log(`loop error (${path}): ${e.stack}`); }
+    }
   };
 
   return {
-    app, server, engine, watcher, auth, db, rpc, tick,
+    app, server, engine, practice, watcher, auth, db, rpc, tick,
     async start(port = config.port) {
       await new Promise((r) => server.listen(port, r));
       loopTimer = setInterval(tick, config.loopMs);
@@ -278,9 +386,10 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
     async stop() {
       clearInterval(loopTimer);
       watcher.stop();
-      for (const ws of sockets) ws.terminate();
+      for (const ch of channels.values()) for (const ws of ch.sockets) ws.terminate();
       await new Promise((r) => server.close(() => r()));
       db.close();
+      if (practiceDb) practiceDb.close();
     },
   };
 }

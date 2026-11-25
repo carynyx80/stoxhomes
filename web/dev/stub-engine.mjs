@@ -16,11 +16,12 @@ const ata = (owner, mint) => getAssociatedTokenAddressSync(new PublicKey(mint), 
 const PORT = Number(process.env.PORT || 8787);
 const COMPANY = process.env.STUB_COMPANY || "8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx";
 const SOL = process.env.STUB_CHAIN !== "evm"; // v2: Solana
-const addrOf = (a) => { if (SOL) { if (bs58.decode(String(a)).length !== 32) throw fail("BAD_INPUT", "Bad address"); return String(a); } return ethers.getAddress(a); };
+const addrOf = (a) => { if (String(a).startsWith("P:")) return String(a); if (SOL) { if (bs58.decode(String(a)).length !== 32) throw fail("BAD_INPUT", "Bad address"); return String(a); } return ethers.getAddress(a); };
 const TOKENS = [{ symbol: "USDC", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 }, { symbol: "USDT", mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 }];
 const USDT = process.env.STUB_USDT || "0x55d398326f99059fF775485246999027B3197955";
 const CHAIN_ID = Number(process.env.STUB_CHAIN_ID || 56);
 const CONF = Number(process.env.STUB_CONFIRMATIONS || 3);
+const TRADING_OPEN = process.env.STUB_TRADING_OPEN === "1";
 const FEE = 0.0005, MM = 0.005, MAXLEV = 100, DAY = 86400;
 const now = () => Math.floor(Date.now() / 1000);
 const s = (x, d = 6) => (Math.round(Number(x) * 10 ** d) / 10 ** d).toString();
@@ -29,12 +30,15 @@ const MARKETS = [["NYC", "New York", 351.78], ["LA", "Los Angeles", 446.2], ["MI
   .map(([symbol, name, v], id) => ({ id, symbol, name: `${symbol}-USD`, city: name, index: v, target: v, skewScale: 1_000_000, skew: 0, longOI: 0, shortOI: 0, active: true, nextPrintAt: null, lastPrint: { value: v, at: now() - 20 * DAY }, vol24: 0 }));
 const hist = Object.fromEntries(MARKETS.map((m) => {
   let v = m.index * 0.8; const prints = [];
-  for (let i = 60; i >= 0; i--) { v *= 1 + 0.004 + Math.sin(i + m.id) * 0.004; prints.push({ at: now() - i * 30 * DAY, value: s(i === 0 ? m.index : v, 2) }); }
+  const N = 180; v = m.index * 0.42;
+  for (let i = N; i >= 0; i--) { const t = N - i; v *= 1 + 0.0049 + Math.sin(t / 7 + m.id) * 0.006 + (t > 60 && t < 84 ? -0.009 : 0); prints.push({ at: now() - i * 30 * DAY, value: s(v, 2) }); }
+  const k = m.index / Number(prints[prints.length - 1].value); for (const p of prints) p.value = s(Number(p.value) * k, 2);
   return [m.id, prints];
 }));
 const users = new Map(); // addr -> { available, vaultShares, pendingShares, unlockAt }
 const positions = new Map(); // `${id}:${addr}` -> pos
 const deposits = new Map(); // key -> { address, txHash, amount, status, confirmations, block, at }
+const faucetAt = new Map();
 const withdrawals = []; const trades = []; const sentTxs = []; const usedSigs = new Set(); const unattributed = [];
 const wallets = new Map(); // simulated on-chain balances (Solana mode)
 const wallet = (a) => { if (!wallets.has(a)) wallets.set(a, a === COMPANY ? { sol: 0.005, USDC: 200_000, USDT: 50_000 } : { sol: 0.5, USDC: 10_000, USDT: 10_000 }); return wallets.get(a); };
@@ -86,7 +90,7 @@ function posView(p) {
   return { marketId: p.marketId, symbol: m.symbol, side: p.size > 0 ? "long" : "short", size: s(Math.abs(p.size), 8), entryPrice: s(p.entry, 6), indexPrice: s(m.index, 6), margin: s(p.margin), pnl: s(pnl), funding: "0", equity: s(eq), leverage: s(absN / p.margin, 2), liquidationPrice: s(liq, 4), liquidatable: eq < MM * absN };
 }
 function marketView(m) {
-  return { id: m.id, symbol: m.symbol, name: m.name, indexPrice: s(m.index), targetPrice: s(m.target), markPrice: s(mark(m)), fundingRatePerDay: s(funding(m), 8), longOI: s(m.longOI, 4), shortOI: s(m.shortOI, 4), skew: s(m.skew, 4), longOIUsd: s(m.longOI * m.index), shortOIUsd: s(m.shortOI * m.index), closeOnly: closeOnly(m), nextPrintAt: m.nextPrintAt, lastPrint: m.lastPrint, change24h: "0", volume24h: s(m.vol24), active: m.active };
+  return { id: m.id, symbol: m.symbol, name: m.name, indexPrice: s(m.index), targetPrice: s(m.target), markPrice: s(mark(m)), fundingRatePerDay: s(funding(m), 8), longOI: s(m.longOI, 4), shortOI: s(m.shortOI, 4), skew: s(m.skew, 4), longOIUsd: s(m.longOI * m.index), shortOIUsd: s(m.shortOI * m.index), closeOnly: closeOnly(m), nextPrintAt: m.nextPrintAt, lastPrint: m.lastPrint, change24h: "0", change1y: s(hist[m.id].length > 12 ? m.index / Number(hist[m.id][hist[m.id].length - 13].value) - 1 : 0, 6), volume24h: s(m.vol24), active: m.active, tradingOpen: TRADING_OPEN };
 }
 const sharePrice = () => (vault.shares > 0 ? vault.value / vault.shares : 1);
 function meView(a) {
@@ -105,9 +109,9 @@ const pubTrade = ({ trader, ...t }) => t;
 
 // ---- routes ----
 const routes = {
-  "GET /config": () => SOL ? ({ chain: "solana", cluster: "mainnet-beta", companyAddress: COMPANY, tokens: TOKENS.map((t) => ({ ...t, companyTokenAccount: ata(COMPANY, t.mint) })), withdrawTokens: ["USDC", "USDT"], commitment: "finalized", features: ["chain/balances", "chain/send"], minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }) : ({ chainId: CHAIN_ID, companyAddress: COMPANY, usdt: { address: USDT, decimals: 18 }, confirmations: CONF, minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }),
+  "GET /config": () => SOL ? ({ chain: "solana", cluster: "mainnet-beta", companyAddress: COMPANY, tokens: TOKENS.map((t) => ({ ...t, companyTokenAccount: ata(COMPANY, t.mint) })), withdrawTokens: ["USDC", "USDT"], commitment: "finalized", features: ["chain/balances", "chain/send"], tradingOpen: TRADING_OPEN, reason: TRADING_OPEN ? null : "liquidity", minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }) : ({ chainId: CHAIN_ID, companyAddress: COMPANY, usdt: { address: USDT, decimals: 18 }, confirmations: CONF, minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }),
   "GET /markets": () => MARKETS.map(marketView),
-  "GET /markets/:id/history": ({ params }) => ({ prints: hist[params.id] || [], snapshots: [] }),
+  "GET /markets/:id/history": ({ params, q }) => { const days = { "1M": 30, "6M": 182, "1Y": 365, "5Y": 1826 }[q.range]; const since = days ? now() - days * DAY : 0; return { prints: (hist[params.id] || []).filter((p) => p.at >= since), snapshots: [] }; },
   "GET /markets/:id/trades": ({ params, q }) => trades.filter((t) => t.marketId === Number(params.id)).slice(0, Number(q.limit || 50)).map(pubTrade),
   "GET /quote": ({ q }) => { const m = MARKETS[q.marketId], z = Number(q.size); return { fillPrice: s(fill(m, z)), fee: s(Math.abs(z) * fill(m, z) * FEE), closeFillPrice: s(fill(m, -z, false)) }; },
   "GET /vault": () => ({ poolValue: s(vault.value), totalShares: s(vault.shares, 8), sharePrice: s(sharePrice(), 8), feeApr7d: "0.124", utilization: s(Math.min(1, MARKETS.reduce((t, m) => t + Math.abs(m.skew) * m.index, 0) / vault.value), 4) }),
@@ -141,7 +145,7 @@ const routes = {
   "GET /me/history": ({ me }) => ({ trades: trades.filter((t) => t.trader === me).map((t) => ({ ...pubTrade(t), symbol: MARKETS[t.marketId].symbol })), margin: [], vault: [] }),
   "POST /positions/open": ({ me, body }) => {
     const m = MARKETS[body.marketId], u = user(me), size = Number(body.size), margin = Number(body.margin);
-    if (!m.active) throw fail("MARKET_INACTIVE"); if (closeOnly(m)) throw fail("CLOSE_ONLY");
+    if (!TRADING_OPEN && !String(me).startsWith("P:")) throw fail("TRADING_CLOSED", "Trading opens soon"); if (!m.active) throw fail("MARKET_INACTIVE"); if (closeOnly(m)) throw fail("CLOSE_ONLY");
     if (positions.has(`${m.id}:${me}`)) throw fail("POSITION_EXISTS");
     if (margin > u.available) throw fail("INSUFFICIENT_BALANCE");
     const f = fill(m, size); if (size > 0 ? f > Number(body.acceptablePrice) : f < Number(body.acceptablePrice)) throw fail("SLIPPAGE");
@@ -190,7 +194,12 @@ const routes = {
     const cw = wallet(COMPANY);
     const onchain = SOL ? cw.USDC + cw.USDT : rpc ? Number(ethers.formatUnits(await usdtC.balanceOf(COMPANY), 18)) : 300_000;
     const pend = withdrawals.filter((w) => w.status === "pending");
-    return { companyOnChain: { USDC: s(cw.USDC), USDT: s(cw.USDT), total: s(onchain) }, companySol: s(cw.sol, 9), unattributedDeposits: unattributed.filter((d) => !d.resolved), companyUsdtOnChain: s(onchain), liabilities: { users: s(usersL), vault: s(vault.value), protocolFees: s(protocolFees) }, surplus: s(onchain - usersL - vault.value - protocolFees), pendingWithdrawals: { count: pend.length, amount: s(pend.reduce((t, w) => t + w.amount, 0)) } };
+    const setup = [
+      { key: "sol", label: "SOL for fees", done: cw.sol >= 0.01, detail: `${cw.sol.toFixed(4)} SOL in the company wallet`, next: "Send at least 0.05 SOL to the company wallet for fees and account rent." },
+      { key: "capital", label: "Capital in wallet", done: onchain > 0, detail: `$${onchain.toLocaleString()} USDC + USDT`, next: "Send USDC or USDT to the company wallet." },
+      { key: "vault", label: "Vault seeded", done: vault.value > 0, detail: `Vault value $${Math.round(vault.value).toLocaleString()}`, next: "Seed the vault with the Seed vault form below." },
+    ];
+    return { setup, tradingOpen: TRADING_OPEN, companyOnChain: { USDC: s(cw.USDC), USDT: s(cw.USDT), total: s(onchain) }, companySol: s(cw.sol, 9), unattributedDeposits: unattributed.filter((d) => !d.resolved), companyUsdtOnChain: s(onchain), liabilities: { users: s(usersL), vault: s(vault.value), protocolFees: s(protocolFees) }, surplus: s(onchain - usersL - vault.value - protocolFees), pendingWithdrawals: { count: pend.length, amount: s(pend.reduce((t, w) => t + w.amount, 0)) } };
   },
   "GET /admin/withdrawals": ({ q }) => withdrawals.filter((w) => !q.status || w.status === q.status).map(wView),
   "GET /admin/deposits": ({ q }) => unattributed.filter((d) => (q.status || "unattributed") === "unattributed" ? !d.resolved : true),
@@ -232,6 +241,21 @@ const server = http.createServer(async (req, res) => {
   const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Methods": "GET, POST, OPTIONS" };
   if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
   const url = new URL(req.url, "http://x");
+  let practice = false;
+  if (url.pathname.startsWith("/practice/")) { practice = true; url.pathname = url.pathname.slice("/practice".length); }
+  if (practice && req.method === "POST" && url.pathname === "/faucet") {
+    const t = (req.headers.authorization || "").replace(/^Bearer /, ""), sess = sessions.get(t);
+    const out = (code, obj) => { res.writeHead(code, { ...cors, "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
+    if (!sess) return out(401, { error: "UNAUTHORIZED", message: "Sign in first" });
+    const key = "P:" + sess.address, last = faucetAt.get(key) || 0;
+    if (now() - last < DAY) return out(429, { error: "FAUCET_COOLDOWN", message: "Already claimed", nextAt: last + DAY });
+    faucetAt.set(key, now()); user(key).available += 10_000; notify(key);
+    return out(200, { amount: "10000", nextAt: now() + DAY });
+  }
+  if (practice && /^\/(me\/deposits|me\/withdrawals|withdrawals|chain\/send)/.test(url.pathname) && req.method === "POST") {
+    res.writeHead(400, { ...cors, "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "PRACTICE_ONLY", message: "Practice mode" }));
+  }
+  if (practice && url.pathname === "/config") { res.writeHead(200, { ...cors, "Content-Type": "application/json" }); return res.end(JSON.stringify({ ...routes["GET /config"](), tradingOpen: true, reason: null, practice: true })); }
   const r = compiled.find((c) => c.method === req.method && c.re.test(url.pathname));
   const send = (code, obj) => { res.writeHead(code, { ...cors, "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
   if (!r) return send(404, { error: "NOT_FOUND", message: "No such route" });
@@ -242,18 +266,25 @@ const server = http.createServer(async (req, res) => {
     if (AUTH(r.k)) {
       const t = (req.headers.authorization || "").replace(/^Bearer /, ""), sess = sessions.get(t);
       if (!sess || sess.expiresAt < now()) throw fail("UNAUTHORIZED", "Sign in first", 401);
-      me = sess.address;
+      me = practice ? "P:" + sess.address : sess.address;
       if (ADMIN(r.k) && me !== COMPANY) throw fail("UNAUTHORIZED", "Admin only", 403);
     }
-    send(200, (await r.fn({ params, q: Object.fromEntries(url.searchParams), body, me })) ?? {});
+    let result = (await r.fn({ params, q: Object.fromEntries(url.searchParams), body, me })) ?? {};
+    if (practice && r.k === "GET /markets") result = result.map((m) => ({ ...m, tradingOpen: true }));
+    send(200, result);
   } catch (e) { send(e.status || 400, { error: e.code || "BAD_REQUEST", message: e.message }); }
 });
 
 // ---- websocket ----
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, sock, head) => {
+  const p = new URL(req.url, "http://x").pathname;
+  if (p !== "/ws" && p !== "/practice/ws") return sock.destroy();
+  wss.handleUpgrade(req, sock, head, (ws) => { ws.practice = p === "/practice/ws"; wss.emit("connection", ws, req); });
+});
 const socks = new Set();
 wss.on("connection", (ws, req) => {
-  const t = new URL(req.url, "http://x").searchParams.get("token"); ws.addr = sessions.get(t)?.address || null;
+  const t = new URL(req.url, "http://x").searchParams.get("token"); const a = sessions.get(t)?.address || null; ws.addr = a && ws.practice ? "P:" + a : a;
   socks.add(ws); ws.on("close", () => socks.delete(ws));
   ws.send(JSON.stringify({ type: "markets", data: MARKETS.map(marketView) }));
 });

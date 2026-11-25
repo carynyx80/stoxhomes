@@ -81,9 +81,62 @@ function TopBar({ ex, setFunds, onHome }) {
       <a className="brand" href="/" onClick={(e) => { e.preventDefault(); onHome(); }}><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></a>
       <div className="top-r">
         <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : ENGINE_MODE ? (ex.error ? "Offline" : "Live") : chain.name}</span>
+        {ENGINE_MODE && <ModeSwitch ex={ex} />}
         {ENGINE_MODE ? <ConnectButton ex={ex} onFunds={setFunds} /> : <WalletButtons ex={ex} setFunds={setFunds} />}
       </div>
     </header>
+  );
+}
+
+function ModeSwitch({ ex }) {
+  return (
+    <div className="modesw" role="radiogroup" aria-label="Trading mode">
+      {[["real", "Real"], ["practice", "Practice"]].map(([k, l]) => (
+        <button key={k} role="radio" aria-checked={ex.mode === k} className={(ex.mode === k ? "on " : "") + k} onClick={() => ex.setMode(k)}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
+function PracticeBanner({ ex }) {
+  if (!ex.practice) return null;
+  const next = ex.faucetNext ? new Date(Number(ex.faucetNext) * (Number(ex.faucetNext) < 1e12 ? 1000 : 1)) : null;
+  return (
+    <div className="practice-banner" role="status">
+      <span><b>Practice mode.</b> Play money on real prices. Nothing here is withdrawable.</span>
+      {ex.wallet.signedIn
+        ? <button className="pb-btn" disabled={ex.busy === "faucet"} onClick={() => ex.actions.faucet()}>{ex.busy === "faucet" ? "Adding…" : "Get $10,000 practice funds"}</button>
+        : ex.wallet.connected
+          ? <button className="pb-btn" disabled={ex.signing} onClick={() => ex.actions.signIn()}>Sign in to get practice funds</button>
+          : <button className="pb-btn" onClick={() => ex.actions.connect()}>Connect wallet to practice</button>}
+      {next && next > new Date() && <small>Next refill: {next.toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })}</small>}
+    </div>
+  );
+}
+
+function SetupChecklist({ ex }) {
+  const [ov, setOv] = useState(null);
+  useEffect(() => { let stop = false; ex.admin?.call("/admin/overview").then((o) => { if (!stop) setOv(o); }).catch(() => {}); return () => { stop = true; }; }, [ex.isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
+  const raw = ov?.setup || ov?.checklist || ov?.setupChecklist;
+  if (!raw) return null;
+  const items = Array.isArray(raw) ? raw : Object.entries(raw).map(([k, v]) => (typeof v === "object" ? { key: k, ...v } : { key: k, done: !!v }));
+  const firstOpen = items.find((x) => !(x.done ?? x.ok ?? x.complete));
+  return (
+    <section className="panel setup">
+      <div className="sec-head"><h3>Go-live checklist</h3><span className="sub">{ex.tradingOpen ? "Trading is open" : "Real trading is closed until every step is done"}</span></div>
+      <ul className="setup-list">
+        {items.map((x, i) => {
+          const done = !!(x.done ?? x.ok ?? x.complete);
+          return (
+            <li key={x.key || i} className={done ? "done" : ""}>
+              <span className="tick" aria-hidden="true">{done ? "✓" : i + 1}</span>
+              <div><b>{x.label || x.title || x.name || x.key}</b>{x.detail || x.value ? <small>{x.detail || x.value}</small> : null}
+                {!done && (x.next || x.action || x.hint) && <p className={x === firstOpen ? "next now" : "next"}>{x === firstOpen ? "Next step: " : ""}{x.next || x.action || x.hint}</p>}</div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -151,7 +204,7 @@ function ChartPanel({ ex, m, now }) {
           </div>
         </div>
         <div className="ch-side">
-          <div className="tabs">{["1M", "6M", "1Y", "5Y"].map((r) => <button key={r} className={r === range ? "on" : ""} onClick={() => setRange(r)}>{r}</button>)}</div>
+          <div className="tabs">{["1M", "6M", "1Y", "5Y", "ALL"].map((r) => <button key={r} className={r === range ? "on" : ""} onClick={() => setRange(r)}>{r}</button>)}</div>
           <div className="legend"><span><i className="lg-i" />Index</span><span><i className="lg-m" />Mark</span></div>
         </div>
       </div>
@@ -238,6 +291,8 @@ function SlideDesk({ ex, nav }) {
             ? <button className="go long" onClick={() => ex.actions.connect()}>Connect wallet</button>
             : ENGINE_MODE && !ex.wallet.signedIn
               ? <button className="go long" disabled={ex.signing} onClick={() => ex.actions.signIn()}>{ex.signing ? "Check your wallet…" : "Sign in"}</button>
+              : ex.practice
+                ? <><button className="go long" disabled={ex.busy === "faucet"} onClick={() => ex.actions.faucet()}>Get $10,000 practice funds</button><button className="ghost" onClick={() => ex.setMode("real")}>Switch to Real to deposit</button></>
               : <><button className="go long" onClick={() => (ENGINE_MODE ? setFunds("deposit") : setSheet({ type: "deposit" }))}>Deposit</button>
                   <button className="ghost" onClick={() => (ENGINE_MODE ? setFunds("withdraw") : setSheet({ type: "requestWithdraw" }))}>Withdraw</button></>}
         </div>
@@ -249,11 +304,12 @@ function SlideDesk({ ex, nav }) {
       </section>
     </> },
   ];
-  if (ex.isAdmin) slides.push({ id: "admin", label: "Admin", render: () => <AdminPage ex={ex} /> });
+  if (ex.isAdmin) slides.push({ id: "admin", label: "Admin", render: () => <><SetupChecklist ex={ex} /><AdminPage ex={ex} /></> });
 
   return (
     <AppShell slides={slides} header={<>
       <TopBar ex={ex} setFunds={setFunds} onHome={() => nav("/")} />
+      <PracticeBanner ex={ex} />
       {ex.error && <div className="errbar">{ex.error}</div>}
       <Ticker markets={ex.markets} />
     </>}>
@@ -372,7 +428,7 @@ function Desk({ ex, admin }) {
               </div>
             </div>
             <div className="ch-side">
-              <div className="tabs">{["1M", "6M", "1Y", "5Y"].map((r) => <button key={r} className={r === range ? "on" : ""} onClick={() => setRange(r)}>{r}</button>)}</div>
+              <div className="tabs">{["1M", "6M", "1Y", "5Y", "ALL"].map((r) => <button key={r} className={r === range ? "on" : ""} onClick={() => setRange(r)}>{r}</button>)}</div>
               <div className="legend"><span><i className="lg-i" />Index</span><span><i className="lg-m" />Mark</span></div>
             </div>
           </div>
@@ -452,7 +508,9 @@ function SkewBar({ m }) {
 
 function Ticker({ markets }) {
   const row = markets.map((c) => (
-    <span key={c.symbol}><b>{c.symbol}</b> {c.index.toFixed(2)} <i className={c.change24h >= 0 ? "up" : "dn"}>{pctS(c.change24h, 3)}</i> <small>F {pctS(c.funding, 4)}</small></span>
+    <span key={c.symbol}><b>{c.symbol}</b> {c.index.toFixed(2)} {c.change24h === 0 && c.change1y != null
+      ? <i className={c.change1y >= 0 ? "up" : "dn"}>{pctS(c.change1y, 1)} 1Y</i>
+      : <i className={c.change24h >= 0 ? "up" : "dn"}>{pctS(c.change24h, 3)}</i>} <small>F {pctS(c.funding, 4)}</small></span>
   ));
   return <div className="ticker"><div className="ticker-in">{row}{row}{row}</div></div>;
 }
@@ -484,7 +542,7 @@ function Ticket({ m, ex, ps, openFunds }) {
         <button className={side === "short" ? "on" : ""} onClick={() => setSide("short")}>Short <small>price falls</small></button>
       </div>
       <label className="field">
-        <span>Margin <small>{ENGINE_MODE && ex.wallet.signedIn ? <>Available {usd(ex.wallet.balance, 2)}<button type="button" className="tk-faucet" onClick={() => openFunds("deposit")}>Deposit</button></> : ENGINE_MODE && ex.wallet.connected ? "Sign in to see your balance" : ex.wallet.connected ? <>Balance {usd(ex.wallet.balance)}{ex.faucet && ex.live && <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>+ test USDT</button>}</> : "Wallet not connected"}</small></span>
+        <span>Margin <small>{ENGINE_MODE && ex.wallet.signedIn ? <>Available {usd(ex.wallet.balance, 2)}{ex.practice ? <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>Get practice funds</button> : <button type="button" className="tk-faucet" onClick={() => openFunds("deposit")}>Deposit</button>}</> : ENGINE_MODE && ex.wallet.connected ? "Sign in to see your balance" : ex.wallet.connected ? <>Balance {usd(ex.wallet.balance)}{ex.faucet && ex.live && <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>+ test USDT</button>}</> : "Wallet not connected"}</small></span>
         <div className="inp"><input type="number" min="0" inputMode="decimal" value={marginStr} onChange={(e) => setMargin(e.target.value)} aria-label="Margin" /><b>{ENGINE_MODE ? "USD" : "USDT"}</b></div>
       </label>
 
@@ -514,7 +572,9 @@ function Ticket({ m, ex, ps, openFunds }) {
         <div><dt>Fee 0.05%</dt><dd>{usd(fee, 2)}</dd></div>
         <div><dt>Funding / day</dt><dd>{pctS((side === "long" ? -1 : 1) * m.funding, 4)}</dd></div>
       </dl>
-      {m.active === false
+      {ENGINE_MODE && !ex.tradingOpen
+        ? <div className="closed-box"><p><b>Trading opens soon.</b> Liquidity is being added.</p><button className="go long" onClick={() => ex.setMode("practice")}>Try practice mode</button></div>
+        : m.active === false
         ? <button className="go locked" disabled>Market paused</button>
         : ps.kind === "active"
         ? <button className="go locked" disabled>Close-only{ps.left > 0 ? ` · opens in ${countdown(ps.left)}` : " · awaiting print"}</button>

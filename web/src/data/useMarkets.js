@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import * as mock from "./mock.js";
 import { useLiveExchange, fetchHistory } from "./live.js";
-import { useEngineExchange, ENGINE } from "./engine.js";
+import { useEngineExchange, apiBase, getMode } from "./engine.js";
 
 // VITE_BACKEND: "engine" (default, custodial off-chain exchange), "mock", or "contracts" (legacy on-chain source).
 export const BACKEND = import.meta.env.VITE_BACKEND || (import.meta.env.VITE_USE_MOCK === "true" ? "mock" : "engine");
@@ -44,12 +44,12 @@ function useMockExchange() {
 
 export const useExchange = BACKEND === "mock" ? useMockExchange : BACKEND === "contracts" ? useLiveExchange : useEngineExchange;
 
-const RANGE_S = { "1M": 30 * 86400, "6M": 182 * 86400, "1Y": 365 * 86400, "5Y": 5 * 365 * 86400 };
+const RANGE_S = { "1M": 30 * 86400, "6M": 182 * 86400, "1Y": 365 * 86400, "5Y": 5 * 365 * 86400, ALL: 40 * 365 * 86400 };
 async function fetchEngineHistory(market, range, nowMs) {
   const to = nowMs, from = nowMs - RANGE_S[range] * 1000;
   let pts = [];
   try {
-    const r = await fetch(`${ENGINE}/markets/${market.id}/history?range=${range}`, { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(`${apiBase()}/markets/${market.id}/history?range=${range}`, { signal: AbortSignal.timeout(8000) });
     const h = await r.json();
     pts = [
       ...(h.prints || []).map((p) => ({ t: Number(p.at) * 1000, index: Number(p.value), mark: Number(p.value) })),
@@ -57,10 +57,11 @@ async function fetchEngineHistory(market, range, nowMs) {
     ].filter((p) => p.t >= from && Number.isFinite(p.index)).sort((a, b) => a.t - b.t);
   } catch { pts = []; }
   const first = pts[0] ?? { index: market.index };
-  return [{ t: from, index: first.index, mark: first.index }, ...pts, { t: to, index: market.index, mark: market.mark }];
+  const start = range === "ALL" && pts.length ? first.t : from;
+  return [{ t: start, index: first.index, mark: first.index }, ...pts.filter((p) => p.t > start), { t: to, index: market.index, mark: market.mark }];
 }
 export async function fetchFundingSnapshots(id) {
-  const r = await fetch(`${ENGINE}/markets/${id}/history?range=1M`, { signal: AbortSignal.timeout(8000) });
+  const r = await fetch(`${apiBase()}/markets/${id}/history?range=1M`, { signal: AbortSignal.timeout(8000) });
   const h = await r.json();
   return (h.snapshots || []).map((s) => ({ t: Number(s.at) * 1000, f: Number(s.fundingRatePerDay) }));
 }
@@ -72,7 +73,7 @@ export function useHistorySeries(market, range, nowMs, refreshKey) {
     let stop = false;
     (BACKEND === "engine" ? fetchEngineHistory : fetchHistory)(market, range, nowMs).then((d) => { if (!stop) setData(d); });
     return () => { stop = true; };
-  }, [market.id, range, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [market.id, range, refreshKey, getMode()]); // eslint-disable-line react-hooks/exhaustive-deps
   return data;
 }
 

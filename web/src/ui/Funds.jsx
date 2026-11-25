@@ -52,7 +52,9 @@ export function FundsSheet({ ex, tab: tab0 = "deposit", onClose }) {
           <button className="x" onClick={onClose} aria-label="Close">×</button>
         </div>
         <div className="fbal"><span>Available</span><b>{usd(ex.wallet.balance)}</b><small>In margin {usd(ex.wallet.margin || 0)} · Pending withdrawals {usd(ex.wallet.pendingWithdrawals || 0)}</small></div>
-        {tab === "deposit" ? <Deposit ex={ex} /> : <Withdraw ex={ex} />}
+        {ex.practice
+          ? <div className="fbody"><div className="warnbox"><b>Practice mode.</b> Deposits and withdrawals are only available with real funds.</div><button className="go long" onClick={() => { ex.setMode("real"); }}>Switch to Real to deposit</button></div>
+          : tab === "deposit" ? <Deposit ex={ex} /> : <Withdraw ex={ex} />}
         <p className="custody-note">Custodial · funds held by Stoxhome</p>
       </div>
     </div>

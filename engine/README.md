@@ -11,6 +11,33 @@ Node 22, ESM, SQLite (better-sqlite3, WAL), express, ws; @noble/curves + bs58 (S
 `CHAIN=evm` (the original BNB Chain USDT adapter). Trading, ledger, vault and economics are identical; ledger
 accounts are keyed by base58 address on Solana and lowercase hex on EVM.
 
+## Practice mode
+
+A second, fully separate `Engine` runs in the same process with its own SQLite file (`PRACTICE_DB_PATH`, default
+`/data/practice.db` in production) and no chain watcher. It serves the same REST API under `/practice/*`
+(`/practice/markets`, `/practice/positions/open`, `/practice/me`, ...) and its own WebSocket at `/practice/ws`.
+
+- The same session token works on both (same secret and chain claim).
+- Index prices mirror the real engine exactly: the practice feeds (from/to price, phase-in start, period, scheduled
+  print) and print history are copied from the real engine at boot and after every `/admin/index` and
+  `/admin/schedule-print`.
+- On first boot the practice vault is seeded with 10,000,000 practice USD from `company:equity`.
+- `POST /practice/faucet` (auth) credits 10,000 practice USD, at most once per 24 h per address:
+  `{ amount, nextAt }`, or `429 FAUCET_COOLDOWN` with `nextAt`.
+- Deposits, withdrawals and admin routes under `/practice` return `PRACTICE_ONLY`. Practice balances live only in
+  the practice database; the real ledger is never touched (tested).
+- `/practice/config` includes `practice: true`; the real `/config` includes `practiceAvailable: true`.
+
+## Markets, history and closed state
+
+- `SKEW_SCALE` (index units, default 150,000): mark = index·(1 + skew/SKEW_SCALE), so a ~$50k position moves the mark
+  by about 0.1% and funding follows. Existing market rows are migrated to the configured value on boot.
+- `/markets/:id/history?range=1M|6M|1Y|5Y|ALL` merges the monthly prints from `src/historical.js`
+  (`data/index-history.json`, older than the engine's first print) with the engine's own prints.
+  `/markets` adds `change1y` (12-month change, a fraction); `change24h` is unchanged.
+- When the real vault value is 0, `/config` and every `/markets` row carry `tradingOpen: false, reason: "liquidity"`.
+  `/admin/overview.setup` is a checklist: `{ solOk, sol, minSol, capitalOk, companyOnChain, liabilities, vaultSeeded, vaultValue }`.
+
 ## Solana adapter (`src/solana.js`)
 
 - **Company ATAs** are derived, never looked up (publicnode blocks `getTokenAccountsByOwner`):
@@ -97,6 +124,11 @@ engine only watches the chain.
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `CHAIN` | `solana` | `solana` or `evm` |
+| `SKEW_SCALE` | `150000` | Skew (index units) at which the mark premium reaches 100% |
+| `PRACTICE` | `1` | `0` disables practice mode |
+| `PRACTICE_DB_PATH` | `/data/practice.db` (dev: next to `DB_PATH`) | Practice SQLite file |
+| `PRACTICE_VAULT_SEED` | `10000000` | Practice vault seed on first boot |
+| `PRACTICE_FAUCET` | `10000` | Practice faucet amount (once per 24 h) |
 | `SESSION_SECRET` | required | HMAC key for session tokens (≥16 chars) |
 | `RPC_URL` (solana) | `https://solana-rpc.publicnode.com,https://api.mainnet-beta.solana.com` | Solana endpoints in order |
 | `COMPANY_ADDRESS` (solana) | `8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx` | Deposit wallet and the only admin |
@@ -161,7 +193,7 @@ engine only watches the chain.
 - Index: each print is smoothed linearly over 7 days from the current smoothed price; prints are capped at ±10%.
 - Opens/increases fill at the worse (for the trader) of smoothed and target index, plus the average skew premium
   before/after the trade; closes/reductions use smoothed index plus premium. Mark = index·(1+skew/skewScale),
-  skewScale = 1,000,000 units.
+  skewScale = `SKEW_SCALE` (default 150,000 units; the contract used 1,000,000, which the engine unit tests still use).
 - Funding accrues per second, rate = clamp(skew/skewScale, ±1) × 0.1%/day × index; settled on every touch.
 - Fee 0.05% on open and close (10% to protocol). Maintenance 0.5% of notional at index. Max 100x after fees;
   opens that would be liquidatable immediately are rejected; removing margin is limited to 100x on equity.

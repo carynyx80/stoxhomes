@@ -22,6 +22,14 @@ export function buildSplTransfer({ from, toOwner, mint, decimals, units, blockha
 }
 
 export const ENGINE = (import.meta.env.VITE_ENGINE_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
+
+// ---- Real / Practice mode (practice = same API under /practice, play money on real prices) ----
+const MODE_KEY = "stoxhome.mode";
+let MODE = (() => { try { return localStorage.getItem(MODE_KEY) === "practice" ? "practice" : "real"; } catch { return "real"; } })();
+export const getMode = () => MODE;
+export const apiBase = () => (MODE === "practice" ? ENGINE + "/practice" : ENGINE);
+export function storeMode(m) { MODE = m === "practice" ? "practice" : "real"; try { localStorage.setItem(MODE_KEY, MODE); } catch { /* storage blocked */ } }
+const ROOT_ONLY = /^\/(auth|admin|chain)\b/; // sign-in, admin and chain relay always hit the real engine
 const SLIP = 0.005;
 const ERC20 = ["function balanceOf(address) view returns (uint256)", "function transfer(address to, uint256 amount) returns (bool)"];
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
@@ -56,23 +64,27 @@ export const ERRORS = {
   TX_NOT_FOUND: "The transaction isn't finalized yet. Try again in a few seconds.",
   TX_MISMATCH: "That transaction doesn't match this withdrawal.",
   BAD_INPUT: "Check the amount and try again.",
+  PRACTICE_ONLY: "That isn't available in practice mode. Switch to Real to deposit or withdraw.",
+  TRADING_CLOSED: "Trading opens soon. Liquidity is being added. Try practice mode meanwhile.",
+  FAUCET_COOLDOWN: "Practice funds were already claimed in the last 24h.",
   PAYOUT_MAY_LAND: "A payout may still land. Try again in about 2 minutes.",
   MIN_AMOUNT: "That amount is below the minimum.",
   RATE_LIMITED: "Too many requests. Wait a moment and try again.",
 };
 class EngineError extends Error { constructor(code, message, status) { super(ERRORS[code] || message || code); this.code = code; this.status = status; } }
 
-async function call(path, { method = "GET", body, token } = {}) {
+async function call(path, { method = "GET", body, token, root } = {}) {
   let r;
+  const base = root || ROOT_ONLY.test(path) ? ENGINE : apiBase();
   try {
-    r = await fetch(ENGINE + path, {
+    r = await fetch(base + path, {
       method, signal: AbortSignal.timeout(10_000),
       headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch { throw new EngineError("OFFLINE", "Can't reach the exchange. Check your connection."); }
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new EngineError(j.error || (r.status === 401 ? "UNAUTHORIZED" : "HTTP_" + r.status), j.message || `Request failed (${r.status})`, r.status);
+  if (!r.ok) { const e = new EngineError(j.error || (r.status === 401 ? "UNAUTHORIZED" : "HTTP_" + r.status), j.message || `Request failed (${r.status})`, r.status); e.data = j; throw e; }
   return j;
 }
 const soft = (p) => p.then((v) => v, () => null);
@@ -90,7 +102,11 @@ export function useEngineExchange() {
   const wcRaw = useWallet((t) => notifyRef.current?.(t));
   const account = wcRaw.account;
   const [session, setSession] = useState(null); // { token, expiresAt, isAdmin, address }
-  const [cfg, setCfg] = useState(null);
+  const [mode, setModeState] = useState(MODE);
+  const [cfgs, setCfgs] = useState({});
+  const cfg = cfgs[mode] || cfgs.real || cfgs.practice || null;
+  const setCfg = (c) => setCfgs((x) => ({ ...x, [MODE]: c }));
+  const [faucetNext, setFaucetNext] = useState(null);
   const [pub, setPub] = useState(null);
   const [me, setMe] = useState(null);
   const [error, setError] = useState(null);
@@ -121,8 +137,8 @@ export function useEngineExchange() {
 
   const loadPublic = useCallback(async () => {
     try {
-      const c = cfg || (await call("/config"));
-      if (!cfg) setCfg(c);
+      const c = cfgs[MODE] || (await call("/config"));
+      if (!cfgs[MODE]) setCfg(c);
       const ids = c.markets.map((m) => m.id);
       const [markets, vault, stats, ...tapes] = await Promise.all([
         call("/markets"), soft(call("/vault")), soft(call("/stats")), ...ids.map((i) => soft(call(`/markets/${i}/trades?limit=15`))),
@@ -130,7 +146,7 @@ export function useEngineExchange() {
       setPub({ markets, vault, stats, tapes, at: Date.now() });
       setError(null);
     } catch (e) { setError(e.message); }
-  }, [cfg]);
+  }, [cfgs, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadMe = useCallback(async () => {
     if (!token) return;
@@ -141,7 +157,7 @@ export function useEngineExchange() {
       ]);
       setMe({ me: m, positions, history, deposits: deposits || [], withdrawals: withdrawals || [], token });
     } catch (e) { if (e.code === "UNAUTHORIZED") { expire(); push({ kind: "info", text: ERRORS.UNAUTHORIZED }); } }
-  }, [token, expire]);
+  }, [token, expire, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     if (loading.current) return;
@@ -155,7 +171,7 @@ export function useEngineExchange() {
   useEffect(() => {
     let ws, stop = false, timer;
     const open = () => {
-      try { ws = new WebSocket(ENGINE.replace(/^http/, "ws") + "/ws" + (token ? `?token=${encodeURIComponent(token)}` : "")); } catch { return; }
+      try { ws = new WebSocket(ENGINE.replace(/^http/, "ws") + (mode === "practice" ? "/practice/ws" : "/ws") + (token ? `?token=${encodeURIComponent(token)}` : "")); } catch { return; }
       ws.onmessage = (ev) => {
         let m; try { m = JSON.parse(ev.data); } catch { return; }
         if (m.type === "markets" && Array.isArray(m.data)) setPub((p) => (p ? { ...p, markets: m.data } : p));
@@ -167,7 +183,7 @@ export function useEngineExchange() {
     };
     open();
     return () => { stop = true; clearTimeout(timer); ws?.close(); };
-  }, [token, loadPublic, loadMe]);
+  }, [token, loadPublic, loadMe, mode]);
 
   // ---- sign in ----
   const signIn = useCallback(async () => {
@@ -213,6 +229,23 @@ export function useEngineExchange() {
   
   const actions = {
     connect: async () => wcRaw.openPicker(),
+    faucet: async () => {
+      if (!account) { wcRaw.openPicker(); return false; }
+      if (!token) return signIn();
+      setBusy("faucet");
+      try {
+        const r = await call("/faucet", { method: "POST", token });
+        push({ kind: "ok", text: `Added ${r?.amount ? "$" + Number(r.amount).toLocaleString() : "$10,000"} practice funds` });
+        setFaucetNext(r?.nextAt || r?.nextAvailableAt || null);
+        return true;
+      } catch (e) {
+        const next = e.data?.nextAt || e.data?.nextAvailableAt || e.data?.retryAt || null;
+        if (next) setFaucetNext(next);
+        const when = next ? new Date(Number(next) * (Number(next) < 1e12 ? 1000 : 1)).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : null;
+        push({ kind: "err", text: when ? `Practice funds already claimed. Next refill: ${when}.` : e.message });
+        return false;
+      } finally { setBusy(null); load(); }
+    },
     signIn,
     open: act("open", ({ side, leverage, marketId }) => `${side === "long" ? "Long" : "Short"} ${symOf(marketId)} ${leverage}×`, async ({ marketId, side, margin, leverage }) => {
       const fee = (cfg?.fees?.tradingBps ?? 5) / 10_000;
@@ -306,7 +339,7 @@ export function useEngineExchange() {
 
   // ---- admin ----
   const admin = {
-    call: (path, opts = {}) => call(path, { ...opts, token }),
+    call: (path, opts = {}) => call(path, { ...opts, token, root: true }),
     pay: async (w) => {
       // company wallet pays: create user ATA (payer = company) + transferChecked(company ATA → user ATA)
       try {
@@ -349,7 +382,7 @@ export function useEngineExchange() {
       return {
         id: Number(m.id), name: `${sym}-USD`, symbol: sym, ...(META[sym] || { city: sym, country: "", coords: "" }),
         index: n(m.indexPrice), mark: n(m.markPrice), funding: n(m.fundingRatePerDay), skew: n(m.skew), skewScale: 0,
-        longSize: n(m.longOI), shortSize: n(m.shortOI), change24h: n(m.change24h), change1y: null, volume24h: n(m.volume24h),
+        longSize: n(m.longOI), shortSize: n(m.shortOI), change24h: n(m.change24h), change1y: m.change1y != null ? n(m.change1y) : null, volume24h: n(m.volume24h),
         nextPrintAt: next, closeOnlyFrom: next ? next - 6 * 3600_000 : null, closeOnly: !!m.closeOnly, active: m.active !== false,
         raw: { markPrice: m.markPrice },
       };
@@ -392,7 +425,15 @@ export function useEngineExchange() {
     };
   }
 
+  const setMode = (m) => {
+    if (m === mode) return;
+    storeMode(m); setModeState(MODE); setMe(null); setFaucetNext(null);
+  };
+  useEffect(() => { load(); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  const practice = mode === "practice";
+  const tradingOpen = practice || (cfg?.tradingOpen !== false && !(pub?.markets || []).every((m) => m.tradingOpen === false && (pub?.markets || []).length));
   return {
+    mode, setMode, practice, tradingOpen, closedReason: practice ? null : cfg?.reason || cfg?.tradingClosedReason || null, faucetNext,
     ready, error: ready ? error : error || null, live: true, engine: true, faucet: false,
     config: cfg, session: token ? session : null, isAdmin: !!(token && session?.isAdmin), signing,
     wc: { ...wcRaw, wrongChain: false, disconnect: async () => { if (account) tokens.drop(account); setSession(null); await wcRaw.disconnect(); } },
