@@ -2,7 +2,8 @@
 // indexer API (VITE_API_URL). Raw bigints are kept on `raw` fields; numbers are for display only.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ethers } from "ethers";
-import { connectWallet, contracts, deployment, readProvider } from "../chain.js";
+import { contracts, deployment, readProvider } from "../chain.js";
+import { useWallet, walletError, nativeSymbol } from "./wallet.js";
 import oracleAbi from "../contracts/HouseIndexOracle.json";
 import { META } from "./meta.js";
 import { friendly } from "./errors.js";
@@ -30,8 +31,10 @@ const read = deployment ? contracts(readProvider) : null;
 const oracle = deployment ? new ethers.Contract(deployment.oracle, oracleAbi, readProvider) : null;
 
 export function useLiveExchange() {
-  const [signer, setSigner] = useState(null);
-  const [account, setAccount] = useState(null);
+  const notifyRef = useRef(null);
+  const wc = useWallet((t) => notifyRef.current?.(t));
+  const account = wc.account;
+  const signer = wc.signer;
   const [state, setState] = useState(null);
   const [error, setError] = useState(deployment ? null : "No deployment for this chain in src/contracts/deployments.json");
   const [toasts, setToasts] = useState([]);
@@ -148,19 +151,12 @@ export function useLiveExchange() {
     return () => { stop = true; clearTimeout(timer); ws?.close(); };
   }, [load]);
 
-  // wallet account changes
-  useEffect(() => {
-    const eth = window.ethereum;
-    if (!eth?.on) return;
-    const h = (accs) => { setAccount(accs?.[0] ? ethers.getAddress(accs[0]) : null); if (!accs?.[0]) setSigner(null); };
-    eth.on("accountsChanged", h);
-    return () => eth.removeListener?.("accountsChanged", h);
-  }, []);
 
   // ---- toasts + tx plumbing ----
   const push = (t) => { const id = Math.random().toString(36).slice(2); setToasts((x) => [...x, { id, ...t }]); if (t.kind !== "pending") setTimeout(() => dismiss(id), 6000); return id; };
   const patch = (id, t) => { setToasts((x) => x.map((y) => (y.id === id ? { ...y, ...t } : y))); if (t.kind && t.kind !== "pending") setTimeout(() => dismiss(id), 6000); };
   const dismiss = (id) => setToasts((x) => x.filter((y) => y.id !== id));
+  notifyRef.current = (t) => push(t);
 
   async function send(label, fn) {
     const id = push({ kind: "pending", text: label + " — confirm in wallet" });
@@ -171,34 +167,46 @@ export function useLiveExchange() {
       patch(id, { kind: "ok", text: label + " — confirmed" });
       return true;
     } catch (e) {
-      patch(id, { kind: "err", text: label + " failed: " + friendly(e) });
+      const we = walletError(e);
+      patch(id, we ? { kind: we.quiet ? "info" : "err", text: we.text, hash: undefined } : { kind: "err", text: label + " failed: " + friendly(e) });
       return false;
     }
   }
   const w = signer ? contracts(signer) : null;
+  // Preflight: enough USDT for this action, then approve only what is missing.
   async function allow(amount) {
+    const bal = await read.usdt.balanceOf(account);
+    if (bal < amount) {
+      const f = (x) => Number(ethers.formatEther(x)).toLocaleString(undefined, { maximumFractionDigits: 2 });
+      throw new Error(`Not enough USDT: this needs ${f(amount)} and your wallet has ${f(bal)}.`);
+    }
     const a = await read.usdt.allowance(account, deployment.exchange);
     if (a >= amount) return true;
     return send("Approve USDT", () => w.usdt.approve(deployment.exchange, amount));
   }
-  const guard = (name, fn) => async (...args) => {
-    if (!w) { push({ kind: "err", text: "Connect a wallet first." }); return false; }
+  const guard = (name, fn, { needsGas = true } = {}) => async (...args) => {
+    if (!w) { wc.openPicker(); return false; }
     setBusy(name);
-    try { return await fn(...args); } catch (e) { push({ kind: "err", text: friendly(e) }); return false; } finally { setBusy(null); load(); }
+    try {
+      // wrong network: prompt a switch before anything else
+      if (wc.wrongChain && !(await wc.switchChain())) return false;
+      if (needsGas && (await readProvider.getBalance(account)) === 0n) {
+        push({ kind: "err", text: `You need some ${nativeSymbol()} in ${account.slice(0, 6)}…${account.slice(-4)} to pay network gas.` });
+        return false;
+      }
+      return await fn(...args);
+    } catch (e) {
+      const we = walletError(e);
+      push(we ? { kind: we.quiet ? "info" : "err", text: we.text } : { kind: "err", text: friendly(e) });
+      return false;
+    } finally { setBusy(null); load(); }
   };
   const mkt = (id) => state.markets.find((m) => m.id === id);
   const pos = (id) => state.positions.find((p) => p.marketId === id);
 
   const actions = {
-    connect: async () => {
-      try {
-        setBusy("connect");
-        const s = await connectWallet();
-        setSigner(s);
-        setAccount(ethers.getAddress(await s.getAddress()));
-        push({ kind: "ok", text: "Wallet connected" });
-      } catch (e) { push({ kind: "err", text: friendly(e) }); } finally { setBusy(null); }
-    },
+    connect: async () => wc.openPicker(),
+    switchChain: () => wc.switchChain(),
     faucet: guard("faucet", async () => {
       if (FAUCET) {
         // Hosted faucet (public demo chain): sends gas + test USDT; 429 = cooldown.
@@ -211,8 +219,9 @@ export function useLiveExchange() {
         patch(id, { kind: "ok", text: `Faucet sent ${body.usdt ?? ""} USDT${body.gas ? " + " + body.gas + " ETH gas" : ""}`, hash: typeof txs[0] === "string" ? txs[0] : txs[0]?.hash });
         return true;
       }
+      if ((await readProvider.getBalance(account)) === 0n) { push({ kind: "err", text: `You need some ${nativeSymbol()} to pay network gas.` }); return false; }
       return send("Mint 10,000 test USDT", () => w.usdt.mint(account, 10_000n * WAD));
-    }),
+    }, { needsGas: false }),
     open: guard("open", async ({ marketId, side, margin: marginStr, leverage }) => {
       const m = mkt(marketId), margin = ethers.parseEther(String(marginStr || 0)), L = BigInt(leverage);
       const fee = BigInt(state.params.tradingFeeBps);
@@ -270,7 +279,11 @@ export function useLiveExchange() {
     }),
   };
 
-  return { ready: !!state, error, toasts, dismiss, busy, actions, live: true, faucet: !!deployment?.mockUsdt /* real-USDT deployments (testnet/mainnet): no faucet */, ...(state || {}) };
+  // The wallet controller is the source of truth for connection; balances come from the last load for that account.
+  const walletView = !wc.connected
+    ? { connected: false, address: "", full: "", balance: 0 }
+    : state?.wallet?.full === account ? state.wallet : { connected: true, address: short(account), full: account, balance: 0 };
+  return { ready: !!state, error, toasts, dismiss, busy, actions, live: true, wc, faucet: !!deployment?.mockUsdt /* real-USDT deployments (testnet/mainnet): no faucet */, ...(state || {}), wallet: walletView, positions: wc.connected && state?.wallet?.full === account ? state.positions : [], history: wc.connected && state?.wallet?.full === account ? state.history : [] };
 }
 
 // ---- chart history: API snapshots + prints, falling back to on-chain oracle prints ----

@@ -4,6 +4,9 @@
     "mockUsdt": true,
     "oracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     "exchange": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    "owner": "0x106342ec570E207afDa9fDA63125d7a9071127f2",
+    "feeRecipient": "0x106342ec570E207afDa9fDA63125d7a9071127f2",
+    "startBlock": 0,
     "markets": [
       {
         "symbol": "NYC",

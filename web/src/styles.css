@@ -363,3 +363,18 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .realfunds { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; padding: 2px 7px; font: 500 9.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: #fff; background: var(--dn); border-radius: 2px; vertical-align: middle; }
 .realfunds i { width: 5px; height: 5px; border-radius: 50%; background: #fff; }
 .foot a { color: var(--ink2); text-underline-offset: 2px; }
+/* wallet picker + network */
+.wallet.warn { background: var(--dn); }
+.go.switch { background: var(--amber); color: var(--ink); }
+.toast.info { border-color: #8f897e; } .toast.info .t-ico { color: #b9b3a8; font-style: italic; }
+.wlist { list-style: none; display: grid; gap: 6px; }
+.wlist button, .wlist a { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #3d3a35; color: var(--paper); text-decoration: none; font: 500 14px var(--sans); text-align: left; transition: border-color .15s, background .15s; border-radius: 2px; }
+.wlist button:hover:not(:disabled), .wlist a:hover { border-color: var(--paper); background: rgba(255,255,255,.04); }
+.wlist span { flex: 1; } .wlist em { font: 500 10.5px var(--mono); font-style: normal; text-transform: uppercase; letter-spacing: .06em; color: #8f897e; }
+.wicon { width: 28px; height: 28px; border-radius: 6px; flex: none; object-fit: contain; }
+.wicon.mono { display: grid; place-items: center; background: var(--paper); color: var(--ink); font: 400 14px var(--serif); }
+.wacct { display: flex; gap: 12px; align-items: center; padding: 12px; border: 1px solid #3d3a35; }
+.wacct b { display: block; font-weight: 500; } .wacct small { font: 11px var(--mono); color: #8f897e; word-break: break-all; }
+.wrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wpick .ghost { border-color: #5a554d; color: var(--paper); padding: 12px; } .wpick .ghost:hover { background: var(--paper); color: var(--ink); }
+.tk-mkt { white-space: nowrap; } .tk-head { gap: 8px; } .tk-head .eyebrow { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; }

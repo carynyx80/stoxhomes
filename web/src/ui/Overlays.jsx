@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { INSTALL, deepLinks, isMobile, targetChainName } from "../data/wallet.js";
 
 const usd = (v, d = 2) => (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 
@@ -60,7 +61,7 @@ export function Toasts({ toasts, dismiss, explorer }) {
     <div className="toasts" aria-live="polite">
       {toasts.map((t) => (
         <div key={t.id} className={"toast " + t.kind} onClick={() => dismiss(t.id)}>
-          <span className="t-ico">{t.kind === "pending" ? <i className="spin" /> : t.kind === "ok" ? "✓" : "!"}</span>
+          <span className="t-ico">{t.kind === "pending" ? <i className="spin" /> : t.kind === "ok" ? "✓" : t.kind === "info" ? "i" : "!"}</span>
           <div>
             <p>{t.text}</p>
             {t.hash && (explorer ? <a href={`${explorer}/tx/${t.hash}`} target="_blank" rel="noreferrer">{t.hash.slice(0, 10)}…</a> : <small>{t.hash.slice(0, 10)}…{t.hash.slice(-6)}</small>)}
@@ -69,4 +70,59 @@ export function Toasts({ toasts, dismiss, explorer }) {
       ))}
     </div>
   );
+}
+
+// Wallet picker: EIP-6963 wallets with icons, install links on desktop, deep links on mobile.
+export function WalletPicker({ wc }) {
+  const [list, setList] = useState(!wc.connected);
+  useEffect(() => { const k = (e) => e.key === "Escape" && wc.closePicker(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [wc]);
+  const busy = wc.pending === "connect";
+  const none = wc.wallets.length === 0;
+  const mobile = isMobile();
+  return (
+    <div className="sheet-bg" onClick={wc.closePicker}>
+      <div className="sheet wpick" role="dialog" aria-label="Connect a wallet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head"><h3>{wc.connected && !list ? "Wallet" : "Connect a wallet"}</h3><button className="x" onClick={wc.closePicker} aria-label="Close">×</button></div>
+        {wc.connected && !list && (
+          <>
+            <div className="wacct">
+              <WIcon w={wc.entry} />
+              <div><b>{wc.entry.name}</b><small>{wc.account}</small></div>
+            </div>
+            {wc.wrongChain && <button className="go switch" disabled={wc.pending === "switch"} onClick={wc.switchChain}>{wc.pending === "switch" ? "Confirm in wallet…" : `Switch to ${targetChainName()}`}</button>}
+            <div className="wrow"><button className="ghost" onClick={() => setList(true)}>Change wallet</button><button className="ghost" onClick={wc.disconnect}>Disconnect</button></div>
+          </>
+        )}
+        {list && !none && (
+          <ul className="wlist">
+            {wc.wallets.map((w) => (
+              <li key={w.id}>
+                <button disabled={busy} onClick={() => wc.connect(w)}>
+                  <WIcon w={w} /><span>{w.name}</span><em>{busy ? "…" : wc.entry?.id === w.id && wc.connected ? "Connected" : "Detected"}</em>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {list && none && !mobile && (
+          <>
+            <p className="sheet-note">No browser wallet detected. Install one, then reload this page.</p>
+            <ul className="wlist">{INSTALL.map((w) => <li key={w.name}><a href={w.url} target="_blank" rel="noreferrer"><WIcon w={w} /><span>{w.name}</span><em>Install ↗</em></a></li>)}</ul>
+          </>
+        )}
+        {list && none && mobile && (
+          <>
+            <p className="sheet-note">Open HouseDEX inside your wallet app's browser to connect.</p>
+            <ul className="wlist">{deepLinks().map((w) => <li key={w.name}><a href={w.url}><WIcon w={w} /><span>Open in {w.name}</span><em>↗</em></a></li>)}</ul>
+          </>
+        )}
+        {busy && <p className="sheet-note">Approve the connection in your wallet…</p>}
+      </div>
+    </div>
+  );
+}
+
+function WIcon({ w }) {
+  if (w?.icon) return <img className="wicon" src={w.icon} alt="" width="28" height="28" />;
+  return <span className="wicon mono" aria-hidden="true">{(w?.name || "?").replace(/ wallet/i, "").slice(0, 2)}</span>;
 }

@@ -4,7 +4,8 @@ import { chain, deployment } from "./chain.js";
 const REAL_FUNDS = chain.id === 56;
 const shortAddr = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const RealFunds = () => (REAL_FUNDS ? <span className="realfunds"><i />Real funds · unaudited</span> : null);
-import { Sheet, Toasts } from "./ui/Overlays.jsx";
+import { Sheet, Toasts, WalletPicker } from "./ui/Overlays.jsx";
+import { targetChainName } from "./data/wallet.js";
 import { API } from "./data/live.js";
 import Skyline from "./ui/Skyline.jsx";
 import Chart from "./ui/Chart.jsx";
@@ -93,9 +94,10 @@ function Desk({ ex }) {
         <div className="top-r">
           <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : chain.name}</span>
           {ex.faucet && ex.wallet.connected && <button className="faucet" disabled={!!ex.busy} onClick={() => ex.actions.faucet()}>{ex.busy === "faucet" ? "Funding…" : "Get test USDT"}</button>}
+          {ex.wc?.wrongChain && <button className="wallet warn" disabled={ex.wc.pending === "switch"} onClick={() => ex.wc.switchChain()}>{ex.wc.pending === "switch" ? "Switching…" : "Wrong network"}</button>}
           {ex.wallet.connected
-            ? <span className="wallet" title={ex.wallet.full}>{usd(ex.wallet.balance)} · {ex.wallet.address}</span>
-            : <button className="wallet" onClick={() => ex.actions.connect()}>{ex.busy === "connect" ? "Connecting…" : "Connect wallet"}</button>}
+            ? <button className="wallet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{usd(ex.wallet.balance)} · {ex.wallet.address}</button>
+            : <button className="wallet" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet"}</button>}
         </div>
       </header>
 
@@ -173,6 +175,7 @@ function Desk({ ex }) {
       </section>
 
       {sheet && <Sheet sheet={sheet} ex={ex} onClose={() => setSheet(null)} />}
+      {ex.wc?.pickerOpen && <WalletPicker wc={ex.wc} />}
       <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={chain.explorer} />
       <footer className="foot">
         <span>HouseDEX — prototype on BNB Smart Chain testnet. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
@@ -208,7 +211,7 @@ function PrintBanner({ ps }) {
 const Fact = ({ k, v, cls = "" }) => <div className="fact"><span>{k}</span><b className={cls}>{v}</b></div>;
 
 function SkewBar({ m }) {
-  const tot = m.longSize + m.shortSize, l = m.longSize / tot;
+  const tot = m.longSize + m.shortSize, l = tot > 0 ? m.longSize / tot : 0.5;
   return (
     <div className="fact skew">
       <span>Open interest · L/S</span>
@@ -285,7 +288,9 @@ function Ticket({ m, ex, ps }) {
       {ps.kind === "active"
         ? <button className="go locked" disabled>Close-only{ps.left > 0 ? ` · opens in ${countdown(ps.left)}` : " · awaiting print"}</button>
         : !ex.wallet.connected
-          ? <button className="go long" onClick={() => ex.actions.connect()}>Connect wallet to trade</button>
+          ? <button className="go long" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet to trade"}</button>
+          : ex.wc?.wrongChain
+            ? <button className="go switch" disabled={ex.wc.pending === "switch"} onClick={() => ex.wc.switchChain()}>{ex.wc.pending === "switch" ? "Confirm in wallet…" : `Switch to ${targetChainName()}`}</button>
           : hasPos
             ? <button className="go locked" disabled>Position open — manage it below</button>
             : <button className={"go " + side} disabled={!!ex.busy || margin <= 0} onClick={() => ex.actions.open({ marketId: m.id, side, margin: marginStr, leverage: lev })}>
