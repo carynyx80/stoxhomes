@@ -176,6 +176,7 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
     return rows.map((w) => ({ ...engine.withdrawalView(w), address: w.address }));
   }));
   app.post('/admin/withdrawals/:id/paid', admin, h((req) => watcher.markPaid(posInt(req.params.id, 'id'), body(req))));
+  app.post('/admin/withdrawals/:id/lock', admin, h((req) => engine.lockWithdrawal(posInt(req.params.id, 'id'))));
   app.post('/admin/withdrawals/:id/reject', admin, h((req) => {
     const reason = body(req).reason;
     if (reason !== undefined && (typeof reason !== 'string' || reason.length > 500)) throw new AppError('BAD_INPUT', 'reason must be a string');

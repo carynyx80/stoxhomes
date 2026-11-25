@@ -5,7 +5,46 @@ Off-chain, custodial exchange engine for Stoxhome: perpetual futures on city hou
 [`docs/ENGINE_API.md`](../docs/ENGINE_API.md) and ports the economics of
 `contracts/HousePerpExchange.sol` and `HouseIndexOracle.sol`, including the fixes in `SECURITY_REVIEW.md`.
 
-Node 22, ESM, SQLite (better-sqlite3, WAL), ethers v6, express, ws.
+Node 22, ESM, SQLite (better-sqlite3, WAL), express, ws; @noble/curves + bs58 (Solana), ethers v6 (EVM).
+
+**Chain adapters.** `CHAIN=solana` (default, Solana mainnet-beta, USDC + USDT, spec section "v2: Solana") or
+`CHAIN=evm` (the original BNB Chain USDT adapter). Trading, ledger, vault and economics are identical; ledger
+accounts are keyed by base58 address on Solana and lowercase hex on EVM.
+
+## Solana adapter (`src/solana.js`)
+
+- **Company ATAs** are derived, never looked up (publicnode blocks `getTokenAccountsByOwner`):
+  PDA of `[owner, TOKEN_PROGRAM_ID, mint]` under the ATA program. For `8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx`:
+  USDC ATA `FqfMexmmUhqTWGwTNjz56pY7wB9ucg8LQjXH4njiWzQH`, USDT ATA `7KDPNodKa18Vn7Hd53NQ8D6ePpknjcuS83UBy9U9JrXK`.
+- **RPC:** `RPC_URL` endpoints in order; HTTP 429/5xx and transient RPC codes retry with backoff; 401/403 (e.g.
+  publicnode's "indexed requests require a personal token" for `getTokenAccountBalance`) moves to the next endpoint
+  at once, and token balances then fall back to `getAccountInfo` jsonParsed. `getTransaction` always sends
+  `maxSupportedTransactionVersion: 1`, `encoding: jsonParsed`, `commitment: finalized`.
+- **Deposits:** per mint, `getSignaturesForAddress(companyATA, { until: <stored last signature>, commitment: finalized })`,
+  paged with `before` all the way back to `until` (it never skips history; a lagging node that returns an empty
+  page is detected with a probe and the poll is retried). Transactions are processed oldest first; each one is
+  recorded, credited and the cursor advanced in one SQLite transaction; idempotent by `signature:mint`.
+  The amount is the company ATA's `post - pre` token balance (SPL Token program rows only; Token-2022 look-alikes
+  ignored). The credited user is the owner whose balance of that mint decreased. **Unattributed** (never
+  auto-credited): failed tx, several sending owners, no/unknown sender, or a sender that is an off-curve program
+  address that did not sign (e.g. an AMM vault paying out in a swap routed to the company). Below `MIN_DEPOSIT`:
+  `below_minimum`. Both can be resolved with `POST /admin/deposits/:signature/credit { address, token? }` or
+  `/refund-note { note }`; list with `GET /admin/deposits?status=unattributed|below_minimum|credited|refund_noted|all`.
+  Without `START_SIGNATURE` the first poll stores the newest existing signature (or nothing if the ATA does not exist
+  yet) and old history is never scanned.
+- **Withdrawals:** `POST /withdrawals { amount, token: "USDC"|"USDT" }` (USDC default), paid to the caller's own
+  address. `POST /admin/withdrawals/:id/lock` marks it as being paid (the admin page should call it before signing;
+  user cancels are then refused with `WITHDRAW_LOCKED`). `POST /admin/withdrawals/:id/paid { signature }` fetches the
+  finalized tx and requires success, the right mint, a debit of the company ATA, a credit of ≥ the amount to a token
+  account owned by the user, and an unused signature. The watcher auto-matches outgoing transfers from the company
+  ATAs to the oldest exact-amount pending withdrawal of that user and token; unmatched payouts are listed in
+  `/admin/overview.unmatchedPayouts`.
+- **Sign-in (SIWS style):** the message names the domain, base58 address, nonce, issued-at and "Solana mainnet";
+  the signature is base58 of the 64-byte ed25519 `signMessage` output, verified strictly (RFC 8032, small-order
+  keys rejected). Addresses are validated as canonical base58 of 32 bytes everywhere.
+- `GET /chain/blockhash` proxies `getLatestBlockhash` (finalized) with a 5 s cache.
+- `GET /admin/overview`: `companyOnChain` (USDC + USDT ATA balances, missing account = 0), `companyTokens`,
+  `companySol`, liabilities, `surplus`, pending withdrawals, `unattributedDeposits`, `unmatchedPayouts`.
 
 ## Run
 
@@ -26,9 +65,9 @@ afterwards. Set `INVARIANT_STEPS` to change the length of the fuzz runs (default
 
 1. New service from this repo, root directory `engine`. Build: `npm i --legacy-peer-deps`. Start: `npm start`.
 2. Add a volume mounted at `/data` and set `DB_PATH=/data/engine.db`.
-3. Set `NODE_ENV=production`, `SESSION_SECRET` (32+ random bytes), `START_BLOCK` (a block shortly before the
-   company wallet's first deposit; the engine refuses to start in production without it), `RPC_URL`
-   (several comma-separated endpoints), `CORS_ORIGINS`, `ALLOWED_DOMAIN`.
+3. Set `NODE_ENV=production`, `SESSION_SECRET` (32+ random bytes), `CORS_ORIGINS`, `ALLOWED_DOMAIN`. Solana
+   (default): optionally `RPC_URL` (a paid endpoint first is recommended) and `START_SIGNATURE`. EVM
+   (`CHAIN=evm`): `START_BLOCK` is required in production, plus `RPC_URL`.
 4. Health check path: `/health`. Run a single replica: the engine is a single writer on one SQLite file.
 5. Back up `/data/engine.db` (SQLite online backup or volume snapshots). The ledger is append-only.
 
@@ -39,16 +78,26 @@ engine only watches the chain.
 
 | Var | Default | Meaning |
 | --- | --- | --- |
+| `CHAIN` | `solana` | `solana` or `evm` |
 | `SESSION_SECRET` | required | HMAC key for session tokens (≥16 chars) |
-| `START_BLOCK` | required in prod | First block scanned; in dev, defaults to the current head |
+| `RPC_URL` (solana) | `https://solana-rpc.publicnode.com,https://api.mainnet-beta.solana.com` | Solana endpoints in order |
+| `COMPANY_ADDRESS` (solana) | `8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx` | Deposit wallet and the only admin |
+| `USDC_MINT` / `USDT_MINT` | mainnet mints | Collateral mints (6 decimals, credited 1:1 as micro-USD) |
+| `START_SIGNATURE` | none | Scan company ATA history newer than this; none = start from now |
+| `START_SIGNATURE_USDC` / `_USDT` | none | Per-mint override |
+| `SOLANA_CLUSTER` | `mainnet-beta` | Reported in `/config` |
+| `POLL_MS` (solana) | `10000` | Watcher interval |
+| `MAX_TX_PER_POLL` | `200` | getTransaction calls per mint per poll |
+| `BLOCKHASH_CACHE_MS` | `5000` | `/chain/blockhash` cache |
+| `START_BLOCK` (evm) | required in prod | First block scanned; in dev, defaults to the current head |
 | `NODE_ENV` | | `production` enables the START_BLOCK requirement and `/data/engine.db` default |
 | `PORT` | `4000` | HTTP + WebSocket port |
 | `DB_PATH` | `./engine.db` (prod `/data/engine.db`) | SQLite file |
-| `RPC_URL` | `https://bsc-dataseed.bnbchain.org` | Comma-separated RPC fallbacks |
+| `RPC_URL` (evm) | `https://bsc-dataseed.bnbchain.org` | Comma-separated RPC fallbacks |
 | `CHAIN_ID` | `56` | Chain id (sign-in message and RPC check at boot) |
 | `USDT_ADDRESS` | BSC USDT | Collateral token |
 | `USDT_DECIMALS` | `18` | Token decimals (engine stores micro-USDT) |
-| `COMPANY_ADDRESS` | `0x1063…27f2` | Deposit wallet and the only admin |
+| `COMPANY_ADDRESS` (evm) | `0x1063…27f2` | Deposit wallet and the only admin |
 | `CONFIRMATIONS` | `15` | Blocks before a deposit / payout counts |
 | `LOG_CHUNK` | `2000` | eth_getLogs block range per request (auto-split on provider errors) |
 | `POLL_MS` | `5000` | Watcher poll interval |
@@ -151,3 +200,7 @@ Vault shares are shown with 12 decimals (1 share ≈ 1 USDT at the start). `fund
   withdrawal but has the same exact amount would mark that withdrawal paid (it was still paid on chain).
 - Deposits below `MIN_DEPOSIT` are recorded (`below_minimum`) but must be handled manually.
 - Vault withdrawal requests do not expire (the contract's 3-day execution window was not ported).
+- Solana: only finalized transactions are read, so `/me/deposits` shows a deposit once it is finalized
+  (the `confirming` state is not used). Withdrawal auto-matching is by recipient owner + exact amount + token.
+- Solana: a user can still cancel a pending withdrawal unless the admin page calls `/admin/withdrawals/:id/lock`
+  before signing the payout; a payout that lands after a cancel shows up in `unmatchedPayouts` for manual recovery.

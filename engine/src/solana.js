@@ -60,7 +60,13 @@ export function verifySolSignature(message, signatureB58, address) {
   let sig;
   try { sig = bs58.decode(signatureB58); } catch { return false; }
   if (sig.length !== 64) return false;
-  try { return ed25519.verify(sig, Buffer.from(message, 'utf8'), decodePubkey(address)); } catch { return false; }
+  try {
+    const pub = decodePubkey(address);
+    // Small-order keys (e.g. the identity point) admit universal forgeries: nobody controls them.
+    if (ed25519.ExtendedPoint.fromHex(pub).isSmallOrder()) return false;
+    // Strict RFC 8032 verification (rejects non-canonical S / malleated signatures).
+    return ed25519.verify(sig, Buffer.from(message, 'utf8'), pub, { zip215: false });
+  } catch { return false; }
 }
 
 // --------------------------------------------------------------------- RPC
@@ -81,6 +87,7 @@ export class SolRpc {
   async call(method, params = []) {
     let lastErr;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
+      let blocked = 0;
       for (let i = 0; i < this.urls.length; i++) {
         try {
           const ctl = new AbortController();
@@ -93,6 +100,12 @@ export class SolRpc {
             });
           } finally { clearTimeout(timer); }
           if (res.status === 429 || res.status >= 500) throw Object.assign(new Error(`HTTP ${res.status}`), { transient: true });
+          if (res.status === 401 || res.status === 403) {
+            // e.g. publicnode refuses "indexed" methods: this endpoint cannot serve it, try the next one now
+            let msg = '';
+            try { msg = (await res.json()).error?.message || ''; } catch { /* ignore */ }
+            throw Object.assign(new Error(`HTTP ${res.status} ${msg}`), { blocked: true });
+          }
           if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { transient: true });
           const body = await res.json();
           if (body.error) {
@@ -104,11 +117,13 @@ export class SolRpc {
           }
           return body.result;
         } catch (e) {
-          if (e.rpc && !e.transient) throw e; // deterministic error (bad params, missing account): no retry
+          if (e.rpc && !e.transient && e.rpc.code !== -32601) throw e; // deterministic error (bad params, missing account): no retry
+          if (e.blocked || (e.rpc && e.rpc.code === -32601)) blocked++;
           lastErr = e;
           this.log(`solana rpc ${method} failed on endpoint #${i}: ${e.message}`);
         }
       }
+      if (blocked === this.urls.length) throw lastErr; // no endpoint offers this method
       await sleep(Math.min(this.baseDelayMs * 2 ** attempt, 5000));
     }
     throw lastErr;
@@ -125,13 +140,19 @@ export class SolRpc {
     return this.call('getTransaction', [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'finalized' }]);
   }
 
-  async getTokenBalance(account) {
+  /** Token account balance (raw units); a missing account is 0. */
+  async getTokenBalance(account, mint) {
     try {
       const r = await this.call('getTokenAccountBalance', [account, { commitment: 'finalized' }]);
       return BigInt(r.value.amount);
     } catch (e) {
-      if (e.rpc && /could not find account|Invalid param: could not find/i.test(e.rpc.message || '')) return 0n;
-      throw e;
+      if (e.rpc && /could not find account/i.test(e.rpc.message || '')) return 0n;
+      // Some endpoints (publicnode) refuse getTokenAccountBalance: read the parsed account instead.
+      const r = await this.call('getAccountInfo', [account, { encoding: 'jsonParsed', commitment: 'finalized' }]);
+      if (!r.value) return 0n;
+      const info = r.value.data?.parsed?.info;
+      if (!info || (mint && info.mint !== mint)) throw new Error(`account ${account} is not a token account of ${mint}`);
+      return BigInt(info.tokenAmount.amount);
     }
   }
 
@@ -147,6 +168,10 @@ export class SolRpc {
 }
 
 // ------------------------------------------------------------------ parsing
+
+function signers(tx) {
+  return new Set((tx.transaction?.message?.accountKeys || []).filter((k) => typeof k === 'object' && k.signer).map((k) => k.pubkey));
+}
 
 function accountKeys(tx) {
   return (tx.transaction?.message?.accountKeys || []).map((k) => (typeof k === 'string' ? k : k.pubkey));
@@ -193,6 +218,7 @@ export function parseCompanyTransfer(tx, { mint, companyAta, company }) {
     else if (senders.length > 1) reason = 'multiple_senders';
     else if (!senders[0]) reason = 'unknown_sender';
     else if (senders[0] === company) return { kind: 'internal', amount: mine.delta };
+    else if (!isOnCurve(decodePubkey(senders[0])) && !signers(tx).has(senders[0])) reason = 'program_owned_sender'; // PDA (e.g. AMM vault via CPI): the real payer is someone else
     else sender = senders[0];
     return { kind: 'deposit', amount: mine.delta, sender, reason, senders };
   }
@@ -292,10 +318,19 @@ export class SolanaAdapter {
     const key = `sol_until:${t.mint}`;
     const until = this.meta(key) || undefined;
     // Page newest -> oldest back to `until`.
+    // Never advance past signatures we have not fetched: page all the way back to `until`.
     const sigs = [];
     let before;
-    for (let page = 0; page < 20; page++) {
+    const maxPages = this.cfg.maxSignaturePages || 1000;
+    for (let page = 0; ; page++) {
+      if (page >= maxPages) throw new Error(`${t.symbol}: more than ${maxPages} pages of new signatures; refusing to skip history`);
       const batch = await this.rpc.getSignatures(t.ata, { until, before, limit: 1000 });
+      if (batch.length === 0 && page > 0) {
+        // A full page followed by nothing: make sure we really reached `until` (a lagging fallback node can return []).
+        const probe = await this.rpc.getSignatures(t.ata, { before, limit: 1 });
+        const reached = until ? probe.length === 1 && probe[0].signature === until : probe.length === 0;
+        if (!reached) throw new Error(`${t.symbol}: inconsistent signature paging (lagging RPC?); retrying next poll`);
+      }
       sigs.push(...batch);
       if (batch.length < 1000) break;
       before = batch[batch.length - 1].signature;
@@ -447,7 +482,7 @@ export class SolanaAdapter {
     const balances = {};
     let total = 0n;
     for (const t of this.tokens) {
-      const b = await this.rpc.getTokenBalance(t.ata);
+      const b = await this.rpc.getTokenBalance(t.ata, t.mint);
       balances[t.symbol] = fmtUsdt(b); // both mints have 6 decimals = micro-USD
       total += b;
     }
@@ -458,6 +493,9 @@ export class SolanaAdapter {
       fields: {
         companyOnChain: fmtUsdt(total), companyTokens: balances, companySol: formatUnits(lamports, 9),
         unattributedDeposits: this.unattributed('unattributed'),
+        // payouts seen on chain that matched no pending withdrawal (e.g. paid after a cancel): reconcile manually
+        unmatchedPayouts: this.db.prepare("SELECT signature, mint, recipient, amount, at FROM sol_outgoing WHERE status = 'unmatched' ORDER BY id DESC LIMIT 200").all()
+          .map((o) => ({ signature: o.signature, token: this.byMint.get(o.mint)?.symbol, recipient: o.recipient, amount: fmtUsdt(BigInt(o.amount)), at: Number(o.at) })),
       },
       liabilities: l,
     };

@@ -437,3 +437,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .tokswitch button.on { background: var(--paper); color: var(--ink); }
 .pend-bar.indet i { animation: pulsebar 1.4s ease-in-out infinite alternate; } @keyframes pulsebar { from { opacity: .45; } to { opacity: 1; } }
 .wlist .wicon { flex: none; width: 28px; }
+.wlist img.wicon, .wacct img.wicon { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 7px; object-fit: contain; }
+.ov-grid { grid-template-columns: repeat(7, 1fr); } .sub2 { display: block; font: 10.5px var(--mono); color: var(--mute); margin-top: 2px; } .ov-grid .surplus.neg .sub2 { color: var(--dn); } @media (max-width: 1180px) { .ov-grid { grid-template-columns: repeat(3, 1fr); } } @media (max-width: 900px) { .ov-grid { grid-template-columns: 1fr 1fr; } }

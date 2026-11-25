@@ -279,7 +279,7 @@ function Ticket({ m, ex, ps, openFunds }) {
       </div>
       <label className="field">
         <span>Margin <small>{ENGINE_MODE && ex.wallet.signedIn ? <>Available {usd(ex.wallet.balance, 2)}<button type="button" className="tk-faucet" onClick={() => openFunds("deposit")}>Deposit</button></> : ENGINE_MODE && ex.wallet.connected ? "Sign in to see your balance" : ex.wallet.connected ? <>Balance {usd(ex.wallet.balance)}{ex.faucet && ex.live && <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>+ test USDT</button>}</> : "Wallet not connected"}</small></span>
-        <div className="inp"><input type="number" min="0" inputMode="decimal" value={marginStr} onChange={(e) => setMargin(e.target.value)} aria-label="Margin" /><b>USDT</b></div>
+        <div className="inp"><input type="number" min="0" inputMode="decimal" value={marginStr} onChange={(e) => setMargin(e.target.value)} aria-label="Margin" /><b>{ENGINE_MODE ? "USD" : "USDT"}</b></div>
       </label>
 
       <div className="lev">
@@ -454,7 +454,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
   return (
     <section className="panel vault" id="vault">
       <div className="vault-l">
-        <p className="eyebrow">Liquidity vault · USDT <Custody /></p>
+        <p className="eyebrow">Liquidity vault · {ENGINE_MODE ? "USD" : "USDT"} <Custody /></p>
         <h3>Be the house.</h3>
         <p className="lede">LPs are the counterparty to every trade — earning fees, funding from the crowded side and trader losses.</p>
         <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.engine ? "Fee APR, trailing 7d" : ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
@@ -486,7 +486,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
           </div>
         </div>}
         <div className="vbtns">
-          <button className="go long" disabled={!!ex.busy} onClick={() => (!ex.wallet.connected ? ex.actions.connect() : ENGINE_MODE && !ex.wallet.signedIn ? ex.actions.signIn() : setSheet({ type: "deposit" }))}>{ex.busy === "deposit" ? "Depositing…" : "Deposit USDT"}</button>
+          <button className="go long" disabled={!!ex.busy} onClick={() => (!ex.wallet.connected ? ex.actions.connect() : ENGINE_MODE && !ex.wallet.signedIn ? ex.actions.signIn() : setSheet({ type: "deposit" }))}>{ex.busy === "deposit" ? "Depositing…" : ENGINE_MODE ? "Deposit to vault" : "Deposit USDT"}</button>
           <button className="ghost" disabled={!!ex.busy || !!w || (ex.wallet.connected && pool.shares <= 0)} onClick={() => setSheet({ type: "requestWithdraw" })}>Request withdraw</button>
         </div>
       </div>

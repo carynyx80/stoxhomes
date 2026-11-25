@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { INSTALL, deepLinks, isMobile, targetChainName } from "../data/wallet.js";
 import { SOL_INSTALL, solDeepLinks } from "../data/solanaWallet.js";
+import { logoFor } from "./walletLogos.js";
 
 const usd = (v, d = 2) => (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 
@@ -26,14 +27,14 @@ export function Sheet({ sheet, ex, onClose }) {
       rows: [["Remaining size", `${Math.max(0, pos?.size - v).toFixed(2)} u`], ["Est. realised", usd(pos ? (pos.pnl * Math.min(v, pos.size)) / pos.size : 0)]],
       note: "Reducing the full size closes the position. Flipping through zero is not allowed.",
       cta: "Reduce", run: () => ex.actions.reduce({ marketId: pos.marketId, units: val }) },
-    addMargin: { title: `Add margin · ${pos?.market}`, unit: "USDT", chips: [100, 500, 1000].map((x) => [usd(x, 0), x]),
+    addMargin: { title: `Add margin · ${pos?.market}`, unit: ex.engine ? "USD" : "USDT", chips: [100, 500, 1000].map((x) => [usd(x, 0), x]),
       rows: [["New margin", usd((pos?.margin ?? 0) + v)], ["New leverage", `${pos ? ((pos.size * pos.indexPrice) / (pos.margin + v)).toFixed(1) : "—"}×`]],
       cta: "Add margin", run: () => ex.actions.addMargin({ marketId: pos.marketId, amount: val }) },
-    removeMargin: { title: `Remove margin · ${pos?.market}`, unit: "USDT", chips: [50, 100, 250].map((x) => [usd(x, 0), x]),
+    removeMargin: { title: `Remove margin · ${pos?.market}`, unit: "USD", chips: [50, 100, 250].map((x) => [usd(x, 0), x]),
       rows: [["New margin", usd(Math.max(0, (pos?.margin ?? 0) - v))], ["New leverage", `${pos && pos.margin - v > 0 ? ((pos.size * pos.indexPrice) / (pos.margin - v)).toFixed(1) : "—"}×`]],
       note: "Leverage must stay at or below 100× after removing margin.",
       cta: "Remove margin", run: () => ex.actions.removeMargin({ marketId: pos.marketId, amount: val }) },
-    deposit: { title: "Deposit to vault", unit: "USDT", chips: [1000, 5000, 10000].map((x) => [usd(x, 0), x]),
+    deposit: { title: "Deposit to vault", unit: ex.engine ? "USD" : "USDT", chips: [1000, 5000, 10000].map((x) => [usd(x, 0), x]),
       rows: [[ex.engine ? "Available balance" : "Wallet balance", usd(ex.wallet.balance)], ["Est. shares", (v / ex.pool.sharePrice).toLocaleString(undefined, { maximumFractionDigits: 2 })], ["Share price", "$" + ex.pool.sharePrice.toFixed(4)]],
       note: `Withdrawals need a request and a ${Math.round(ex.params.withdrawCooldown / 3600)}h cooldown.`,
       cta: "Deposit", run: () => ex.actions.deposit({ amount: val }) },
@@ -128,6 +129,7 @@ export function WalletPicker({ wc }) {
 }
 
 function WIcon({ w }) {
-  if (w?.icon) return <img className="wicon" src={w.icon} alt="" width="28" height="28" />;
+  const src = w?.icon || logoFor(w?.name);
+  if (src) return <img className="wicon" src={src} alt="" width="28" height="28" />;
   return <span className="wicon mono" aria-hidden="true">{(w?.name || "?").replace(/ wallet/i, "").slice(0, 2)}</span>;
 }

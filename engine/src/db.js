@@ -88,5 +88,6 @@ export function openDb(file) {
   db.exec(SCHEMA);
   const cols = db.prepare('PRAGMA table_info(withdrawals)').all().map((c) => c.name);
   if (!cols.includes('token')) db.exec('ALTER TABLE withdrawals ADD COLUMN token TEXT');
+  if (!cols.includes('processing_at')) db.exec('ALTER TABLE withdrawals ADD COLUMN processing_at INTEGER');
   return db;
 }

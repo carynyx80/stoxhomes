@@ -6,6 +6,20 @@ import { ethers } from "ethers";
 import { META } from "./meta.js";
 import { useSolanaWallet as useWallet, walletError } from "./solanaWallet.js";
 import bs58 from "bs58";
+import { PublicKey, Transaction } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createTransferCheckedInstruction } from "@solana/spl-token";
+
+const b64 = (u8) => { let s = ""; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
+/** Unsigned legacy tx: create recipient ATA (idempotent, payer = sender) + transferChecked(sender ATA → recipient ATA). */
+export function buildSplTransfer({ from, toOwner, mint, decimals, units, blockhash, lastValidBlockHeight }) {
+  const mintPk = new PublicKey(mint), fromPk = new PublicKey(from), toPk = new PublicKey(toOwner);
+  const src = getAssociatedTokenAddressSync(mintPk, fromPk, true);
+  const dst = getAssociatedTokenAddressSync(mintPk, toPk, true);
+  const tx = new Transaction({ feePayer: fromPk, blockhash, lastValidBlockHeight });
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(fromPk, dst, toPk, mintPk));
+  tx.add(createTransferCheckedInstruction(src, mintPk, dst, fromPk, units, decimals));
+  return tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+}
 
 export const ENGINE = (import.meta.env.VITE_ENGINE_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 const SLIP = 0.005;
@@ -22,7 +36,7 @@ const mulF = (b, f) => (b * BigInt(Math.round(f * 1e6))) / 1_000_000n;
 
 export const ERRORS = {
   UNAUTHORIZED: "Your session expired. Sign in again.",
-  INSUFFICIENT_BALANCE: "Not enough available balance. Deposit USDT or lower the amount.",
+  INSUFFICIENT_BALANCE: "Not enough available balance. Deposit USDC/USDT or lower the amount.",
   LEVERAGE_TOO_HIGH: "Leverage would exceed 100×. Add margin or reduce size.",
   WOULD_BE_LIQUIDATABLE: "That would put the position at its liquidation level. Lower leverage or add margin.",
   SLIPPAGE: "Price moved more than 0.5% while submitting. Try again.",
@@ -32,7 +46,16 @@ export const ERRORS = {
   POSITION_EXISTS: "You already have a position in this market. Increase or close it instead.",
   NO_POSITION: "You have no position in this market.",
   FLIP_NOT_ALLOWED: "Reducing past zero would flip the position. Close it instead.",
-  WITHDRAW_LOCKED: "Your vault withdrawal is still in its 24h cooldown.",
+  WITHDRAW_LOCKED: "Locked: the vault's 24h cooldown is still running, or this withdrawal is already being paid.",
+  STALE_INDEX: "This market's index is stale, so opening is paused. Closing is always allowed.",
+  INSUFFICIENT_LIQUIDITY: "The vault doesn't have enough free liquidity for that right now.",
+  INSUFFICIENT_MARGIN: "Not enough margin left on the position for that.",
+  MOVE_TOO_LARGE: "That print moves more than 10% from the current index.",
+  WITHDRAW_PENDING: "You already have a pending vault withdrawal. Cancel it first.",
+  NOT_PENDING: "That withdrawal is no longer pending.",
+  TX_NOT_FOUND: "The transaction isn't finalized yet. Try again in a few seconds.",
+  TX_MISMATCH: "That transaction doesn't match this withdrawal.",
+  BAD_INPUT: "Check the amount and try again.",
   MIN_AMOUNT: "That amount is below the minimum.",
   RATE_LIMITED: "Too many requests. Wait a moment and try again.",
 };
@@ -76,7 +99,11 @@ export function useEngineExchange() {
   const loading = useRef(false);
 
   // session follows the connected address; never prompts
+  const prevAcct = useRef(null);
   useEffect(() => {
+    // the session belongs to one address: drop the previous address's token when the wallet switches account
+    if (prevAcct.current && prevAcct.current !== account) tokens.drop(prevAcct.current);
+    prevAcct.current = account;
     if (!account) { setSession(null); setMe(null); return; }
     const t = tokens.get(account);
     setSession(t ? { ...t, address: account } : null);
@@ -218,9 +245,9 @@ export function useEngineExchange() {
       const q = await quote(marketId, (long ? "-" : "") + String(p.size).replace(/^-/, "")); // closing trade = −size
       return post("/positions/close", { marketId, acceptablePrice: accept(q.closeFillPrice ?? q.fillPrice, !long) });
     }),
-    addMargin: act("addMargin", ({ amount }) => `Add ${amount} USDT margin`, ({ marketId, amount }) => post("/positions/margin", { marketId, delta: str(big(amount)) })),
-    removeMargin: act("removeMargin", ({ amount }) => `Remove ${amount} USDT margin`, ({ marketId, amount }) => post("/positions/margin", { marketId, delta: "-" + str(big(amount)) })),
-    deposit: act("vaultDeposit", ({ amount }) => `Deposit ${amount} USDT to the vault`, ({ amount }) => post("/vault/deposit", { amount: str(big(amount)) })),
+    addMargin: act("addMargin", ({ amount }) => `Add $${amount} margin`, ({ marketId, amount }) => post("/positions/margin", { marketId, delta: str(big(amount)) })),
+    removeMargin: act("removeMargin", ({ amount }) => `Remove $${amount} margin`, ({ marketId, amount }) => post("/positions/margin", { marketId, delta: "-" + str(big(amount)) })),
+    deposit: act("vaultDeposit", ({ amount }) => `Deposit $${amount} to the vault`, ({ amount }) => post("/vault/deposit", { amount: str(big(amount)) })),
     requestWithdraw: act("requestWithdraw", ({ pct }) => `Request vault withdrawal (${pct}%)`, ({ pct }) => {
       const sh = big(me.me.vault.shares);
       return post("/vault/request-withdraw", { shares: str((sh * BigInt(Math.round(pct * 100))) / 10_000n, 12) });
@@ -229,31 +256,49 @@ export function useEngineExchange() {
     withdraw: act("withdraw", () => "Withdraw from vault", () => post("/vault/withdraw")),
     requestPayout: act("payout", ({ amount, token = "USDC" }) => `Withdrawal request for ${amount} ${token}`, ({ amount, token = "USDC" }) => post("/withdrawals", { amount: str(big(amount)), token })),
     cancelPayout: act("cancelPayout", () => "Cancel withdrawal", ({ id }) => post(`/withdrawals/${id}/cancel`)),
-    depositOnChain: async ({ amount }) => {
-      // USDT.transfer(company, amount) from the connected wallet, on the engine's chain
+    depositOnChain: async ({ amount, token = "USDC" }) => {
+      // SPL transferChecked(user ATA → company ATA) from the connected wallet
       if (!account || !wcRaw.entry) { wcRaw.openPicker(); return null; }
       setBusy("depositOnChain");
       try {
-        if (wcRaw.chainId !== cfg.chainId && !(await wcRaw.switchChain(cfg.chainId))) return null;
-        const bp = new ethers.BrowserProvider(wcRaw.entry.provider, "any");
-        const usdt = new ethers.Contract(cfg.usdt.address, ERC20, bp);
-        const value = ethers.parseUnits(String(amount), cfg.usdt.decimals ?? 18);
-        if (value <= 0n) throw new Error("Enter an amount.");
-        if (cfg.minDeposit && Number(amount) < Number(cfg.minDeposit)) throw new Error(`Minimum deposit is ${cfg.minDeposit} USDT.`);
-        const [bal, gas] = await Promise.all([usdt.balanceOf(account), bp.getBalance(account)]);
-        if (bal < value) throw new Error(`Not enough USDT in your wallet: you have ${Number(ethers.formatUnits(bal, cfg.usdt.decimals ?? 18)).toLocaleString()} USDT.`);
-        if (gas === 0n) throw new Error(`You need a little ${cfg.chainId === 56 || cfg.chainId === 97 ? "BNB" : "native coin"} in this wallet to pay gas.`);
-        const id = push({ kind: "pending", text: "Deposit — confirm in wallet" });
-        const tx = await new ethers.Contract(cfg.usdt.address, ERC20, new ethers.JsonRpcSigner(bp, account)).transfer(cfg.companyAddress, value);
-        patch(id, { kind: "ok", text: "Deposit sent — waiting for confirmations", hash: tx.hash });
-        return tx.hash;
+        const t = (cfg.tokens || []).find((x) => x.symbol === token);
+        if (!t) throw new Error(`${token} deposits aren't supported.`);
+        const units = ethers.parseUnits(String(amount || "0"), t.decimals);
+        if (units <= 0n) throw new Error("Enter an amount.");
+        if (cfg.minDeposit && Number(amount) < Number(cfg.minDeposit)) throw new Error(`Minimum deposit is ${cfg.minDeposit} ${token}.`);
+        await preflight(account, token, Number(amount));
+        const id = push({ kind: "pending", text: `Deposit ${amount} ${token} — confirm in wallet` });
+        let sig;
+        try { sig = await sendTransfer({ from: account, toOwner: cfg.companyAddress, token: t, units }); }
+        catch (e) { dismiss(id); throw e; }
+        patch(id, { kind: "ok", text: "Deposit sent — waiting for finalization", hash: sig });
+        return sig;
       } catch (e) {
         const we = walletError(e);
-        push(we ? { kind: we.quiet ? "info" : "err", text: we.text } : { kind: "err", text: e.shortMessage || e.message });
+        push(we ? { kind: we.quiet ? "info" : "err", text: we.text } : { kind: "err", text: e.message });
         return null;
-      } finally { setBusy(null); }
+      } finally { setBusy(null); load(); }
     },
   };
+  // Balance preflight through the engine (browsers never call public RPC). Skipped if the engine lacks the endpoint.
+  const hasFeature = (f) => Array.isArray(cfg?.features) && cfg.features.includes(f);
+  async function preflight(addr, token, amount) {
+    if (!hasFeature("chain/balances")) return; // engine doesn't expose balances: the wallet's own simulation is the check
+    const b = await call(`/chain/balances?address=${addr}`);
+    if (b.sol != null && Number(b.sol) < 0.00001) throw new Error("You need a little SOL in this wallet to pay network fees.");
+    const have = Number(b.tokens?.[token] ?? b[token] ?? NaN);
+    if (Number.isFinite(have) && have < amount) throw new Error(`Not enough ${token} in your wallet: you have ${have.toLocaleString()} ${token}.`);
+  }
+  async function sendTransfer({ from, toOwner, token, units }) {
+    const { blockhash, lastValidBlockHeight } = await call("/chain/blockhash");
+    const bytes = buildSplTransfer({ from, toOwner, mint: token.mint, decimals: token.decimals, units, blockhash, lastValidBlockHeight });
+    const e = wcRaw.entry;
+    if (e.canSignAndSend()) return e.signAndSend(bytes, wcRaw.chain);
+    if (!hasFeature("chain/send")) throw new Error(`${e.name} can't send transactions from this page. Use Phantom, Solflare or Backpack.`);
+    const signed = await e.signTransaction(bytes, wcRaw.chain);
+    const r = await call("/chain/send", { method: "POST", body: { transaction: b64(signed) } });
+    return r.signature;
+  }
   function mkt(id) { return pub.markets.find((m) => Number(m.id) === Number(id)); }
   function symOf(id) { return mkt(id)?.symbol ?? id; }
 
@@ -261,30 +306,33 @@ export function useEngineExchange() {
   const admin = {
     call: (path, opts = {}) => call(path, { ...opts, token }),
     pay: async (w) => {
-      // company wallet pays USDT.transfer(to, amount) in the browser, then reports the tx hash
+      // company wallet pays: create user ATA (payer = company) + transferChecked(company ATA → user ATA)
       try {
         setBusy("pay:" + w.id);
-        if (wcRaw.chainId !== cfg.chainId && !(await wcRaw.switchChain(cfg.chainId))) return false;
-        const bp = new ethers.BrowserProvider(wcRaw.entry.provider, "any");
-        bp.pollingInterval = 1000;
-        const usdt = new ethers.Contract(cfg.usdt.address, ERC20, new ethers.JsonRpcSigner(bp, account));
-        const value = ethers.parseUnits(String(w.amount), cfg.usdt.decimals ?? 18);
-        const id = push({ kind: "pending", text: `Pay ${w.amount} USDT to ${short(w.to)} — confirm in wallet` });
-        const tx = await usdt.transfer(w.to, value);
-        patch(id, { text: "Payment sent — waiting for 1 confirmation", hash: tx.hash });
-        await tx.wait();
-        // The engine's watcher also matches payouts on chain; only report the tx if it hasn't already.
+        const t = (cfg.tokens || []).find((x) => x.symbol === (w.token || "USDC"));
+        const units = ethers.parseUnits(String(w.amount), t.decimals);
+        // lock first so the user can't cancel while the payment is being signed
+        await call(`/admin/withdrawals/${w.id}/lock`, { method: "POST", token });
+        const id = push({ kind: "pending", text: `Pay ${w.amount} ${t.symbol} to ${short(w.to)} — confirm in wallet` });
+        let sig;
+        try { sig = await sendTransfer({ from: account, toOwner: w.to, token: t, units }); } catch (e) { dismiss(id); throw e; }
+        patch(id, { text: "Payment sent — reporting to the exchange", hash: sig });
         const isPaid = async () => { const l = await call("/admin/withdrawals?status=paid", { token }).catch(() => []); return Array.isArray(l) && l.some((x) => String(x.id) === String(w.id)); };
-        if (!(await isPaid())) {
-          try {
-            await call(`/admin/withdrawals/${w.id}/paid`, { method: "POST", body: { txHash: tx.hash }, token });
-          } catch (e) { if (!(await isPaid())) throw e; }
+        let done = await isPaid();
+        for (let i = 0; !done && i < 20; i++) {
+          try { await call(`/admin/withdrawals/${w.id}/paid`, { method: "POST", body: { signature: sig }, token }); done = true; }
+          catch (e) {
+            if (await isPaid()) { done = true; break; }
+            if (!/TX_NOT_FOUND|NOT_FINALIZED|PENDING/.test(e.code || "")) throw e; // not finalized yet: retry
+            await new Promise((r) => setTimeout(r, 3000));
+          }
         }
-        patch(id, { kind: "ok", text: `Paid ${w.amount} USDT to ${short(w.to)}` });
+        if (!done) throw new Error("The payment hasn't finalized yet. It will be matched automatically.");
+        patch(id, { kind: "ok", text: `Paid ${w.amount} ${t.symbol} to ${short(w.to)}` });
         return true;
       } catch (e) {
         const we = walletError(e);
-        push(we ? { kind: we.quiet ? "info" : "err", text: we.text } : { kind: "err", text: e.shortMessage || e.message });
+        push(we ? { kind: we.quiet ? "info" : "err", text: we.text } : { kind: "err", text: e.message });
         return false;
       } finally { setBusy(null); }
     },
@@ -332,7 +380,7 @@ export function useEngineExchange() {
         poolValue: pv, totalShares: n(v.totalShares), shares: n(mv?.shares), sharePrice: n(v.sharePrice) || 1,
         apr: v.feeApr7d != null ? n(v.feeApr7d) : null, feesApr: v.feeApr7d != null ? n(v.feeApr7d) : null, fundingApr: null, pnlApr: null,
         utilization: v.utilization != null ? n(v.utilization) : used,
-        composition: [{ label: "Idle USDT", value: Math.max(0, 1 - used) }, ...markets.map((m, i) => ({ label: "Backing " + m.symbol, value: backing[i] }))],
+        composition: [{ label: "Idle USD", value: Math.max(0, 1 - used) }, ...markets.map((m, i) => ({ label: "Backing " + m.symbol, value: backing[i] }))],
         pendingWithdrawal: mv && n(mv.pendingShares) > 0 ? { shares: n(mv.pendingShares), unlockAt: n(mv.unlockAt) * 1000, requestedAt: (n(mv.unlockAt) - 86400) * 1000, expiresAt: 0, estimatedAmount: n(mv.pendingShares) * (n(v.sharePrice) || 1) } : null,
       },
       wallet: token && bal

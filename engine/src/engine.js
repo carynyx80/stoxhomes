@@ -831,6 +831,8 @@ export class Engine extends EventEmitter {
       if (!w) throw new AppError('NOT_FOUND', 'Withdrawal not found', 404);
       if (byAddress && w.address !== byAddress) throw new AppError('NOT_FOUND', 'Withdrawal not found', 404);
       if (w.status !== 'pending') throw new AppError('NOT_PENDING', 'Withdrawal is not pending');
+      // Once the admin has started paying, the user can no longer cancel (the payout may already be on chain).
+      if (byAddress && w.processing_at) throw new AppError('WITHDRAW_LOCKED', 'Withdrawal is being paid and can no longer be cancelled');
       const amount = B(w.amount);
       this.post([[acct.locked(w.address), -amount], [acct.available(w.address), amount]], `withdraw_${status}:${id}`);
       this.s.setWd.run(status, null, reason ? String(reason).slice(0, 500) : null, this.now(), id);
@@ -843,6 +845,17 @@ export class Engine extends EventEmitter {
 
   cancelWithdrawal(address, id) { return this._unlockWithdrawal(id, 'cancelled', null, address); }
   rejectWithdrawal(id, reason) { return this._unlockWithdrawal(id, 'rejected', reason || 'rejected', null); }
+
+  /** Admin: mark a pending withdrawal as being paid (call before signing the payout). */
+  lockWithdrawal(id) {
+    return this.tx(() => {
+      const w = this.s.wd.get(id);
+      if (!w) throw new AppError('NOT_FOUND', 'Withdrawal not found', 404);
+      if (w.status !== 'pending') throw new AppError('NOT_PENDING', 'Withdrawal is not pending');
+      this.db.prepare('UPDATE withdrawals SET processing_at = COALESCE(processing_at, ?), updated_at = ? WHERE id = ?').run(this.now(), this.now(), id);
+      return this.withdrawalView(this.s.wd.get(id));
+    });
+  }
 
   markWithdrawalPaid(id, txHash) {
     return this.tx(() => {
@@ -863,6 +876,7 @@ export class Engine extends EventEmitter {
     return {
       id: n(w.id), amount: fmtUsdt(B(w.amount)), to: w.to_addr, status: w.status, txHash: w.tx_hash || null,
       ...(w.token ? { token: w.token, signature: w.tx_hash || null } : {}), at: n(w.created_at), reason: w.reason || null,
+      processing: !!w.processing_at,
     };
   }
 

@@ -36,6 +36,10 @@ export default function AdminPage({ ex }) {
   }
 
   const surplus = Number(ov?.surplus ?? 0);
+  const onchain = ov?.companyOnChain;
+  const onchainTotal = typeof onchain === "object" && onchain ? Number(onchain.total ?? (Number(onchain.USDC || 0) + Number(onchain.USDT || 0))) : Number(onchain ?? ov?.companyUsdtOnChain ?? 0);
+  const sol = ov?.companySol != null ? Number(ov.companySol) : null;
+  const unattributed = ov?.unattributedDeposits || [];
   const L = ov?.liabilities || {};
   const markets = ex.markets;
   return (
@@ -44,7 +48,8 @@ export default function AdminPage({ ex }) {
       <section className="panel ov">
         <div className="sec-head"><h3>Treasury</h3><span className="sub">Company wallet {short(ex.config.companyAddress)}</span></div>
         <div className="ov-grid">
-          <div className="fact"><span>USDT on chain</span><b>{usd(ov?.companyUsdtOnChain)}</b></div>
+          <div className="fact"><span>USDC + USDT on chain</span><b>{usd(onchainTotal)}</b>{(() => { const b = ov?.companyTokens || (typeof onchain === "object" ? onchain : null); return b ? <small className="sub2">USDC {usd(b.USDC)} · USDT {usd(b.USDT)}</small> : null; })()}</div>
+          <div className={"fact " + (sol != null && sol < 0.01 ? "surplus neg" : "")}><span>Company SOL</span><b>{sol == null ? "—" : sol.toFixed(4)}</b>{sol != null && sol < 0.01 && <small className="sub2 dn">Needs SOL for fees</small>}</div>
           <div className="fact"><span>Liabilities · users</span><b>{usd(L.users)}</b></div>
           <div className="fact"><span>Liabilities · vault</span><b>{usd(L.vault)}</b></div>
           <div className="fact"><span>Protocol fees</span><b>{usd(L.protocolFees)}</b></div>
@@ -62,7 +67,7 @@ export default function AdminPage({ ex }) {
               <div className="tr" key={w.id}>
                 <span data-k="Requested">{when(w.at)}</span>
                 <span data-k="Destination"><code title={w.to}>{short(w.to)}</code></span>
-                <span data-k="Amount"><b>{usd(Number(w.amount))}</b></span>
+                <span data-k="Amount"><b>{usd(Number(w.amount))} {w.token || ""}</b></span>
                 <span className="acts">
                   {rejecting === w.id ? (
                     <>
@@ -79,6 +84,16 @@ export default function AdminPage({ ex }) {
                 </span>
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="sec-head"><h3>Unattributed deposits</h3><span className="count">{unattributed.length}</span><span className="sub">Never auto-credited — verify the sender, then credit</span></div>
+        {unattributed.length === 0 ? <div className="empty"><b>Nothing to resolve.</b><span>Deposits the engine can't match to a signed-in wallet appear here.</span></div> : (
+          <div className="tbl awd">
+            <div className="tr th"><span>Seen</span><span>Signature</span><span>Amount</span><span /></div>
+            {unattributed.map((d) => <Unattributed key={d.signature} d={d} run={run} ex={ex} />)}
           </div>
         )}
       </section>
@@ -102,6 +117,21 @@ export default function AdminPage({ ex }) {
         <Form title="Seed vault" fields={[["amount", "number"]]} onSubmit={(v) => run("Seed vault", () => ex.admin.call("/admin/vault/seed", { method: "POST", body: { amount: String(v.amount) } }))}
           note="Moves company capital (from company equity) into the vault." />
       </div>
+    </div>
+  );
+}
+
+function Unattributed({ d, run, ex }) {
+  const [addr, setAddr] = useState("");
+  return (
+    <div className="tr">
+      <span data-k="Seen">{when(d.at)}</span>
+      <span data-k="Signature"><a href={`https://solscan.io/tx/${d.signature}`} target="_blank" rel="noreferrer"><code>{short(d.signature)}</code></a>{d.reason && <small>{d.reason}</small>}</span>
+      <span data-k="Amount"><b>{usd(Number(d.amount))} {d.token}</b></span>
+      <span className="acts">
+        <input className="reason" placeholder="Credit to address" value={addr} onChange={(e) => setAddr(e.target.value)} aria-label="Credit address" />
+        <button className="ghost" disabled={addr.trim().length < 32} onClick={() => run("Credit deposit", () => ex.admin.call(`/admin/deposits/${d.signature}/credit`, { method: "POST", body: { address: addr.trim(), token: d.token } }))}>Credit</button>
+      </span>
     </div>
   );
 }
