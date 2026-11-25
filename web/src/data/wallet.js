@@ -16,7 +16,7 @@ export function chainParams(id = chain.id) {
   if (id === 56) return { chainId: hex, chainName: "BNB Smart Chain", nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 }, rpcUrls: ["https://bsc-dataseed.bnbchain.org"], blockExplorerUrls: ["https://bscscan.com"] };
   if (id === 97) return { chainId: hex, chainName: "BNB Smart Chain Testnet", nativeCurrency: { name: "tBNB", symbol: "tBNB", decimals: 18 }, rpcUrls: ["https://data-seed-prebsc-1-s1.bnbchain.org:8545"], blockExplorerUrls: ["https://testnet.bscscan.com"] };
   if (id === 31337) return { chainId: hex, chainName: "Hardhat local", nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, rpcUrls: [chain.rpc || "http://127.0.0.1:8545"] };
-  const p = { chainId: hex, chainName: chain.name || "HouseDEX Demo", nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, rpcUrls: [chain.rpc] };
+  const p = { chainId: hex, chainName: chain.name || "Stoxhome Demo", nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, rpcUrls: [chain.rpc] };
   if (chain.explorer) p.blockExplorerUrls = [chain.explorer];
   return p;
 }

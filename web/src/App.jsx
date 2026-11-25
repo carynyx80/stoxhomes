@@ -59,7 +59,7 @@ function Boot({ error }) {
     <div className="app">
       <div className="blueprint" aria-hidden="true" />
       <div className="boot">
-        <div className="brand"><span className="mark">⌂</span><span>House<em>DEX</em></span></div>
+        <div className="brand"><span className="mark">⌂</span><span>Stox<em>home</em></span></div>
         <p className="eyebrow">{error ? "Connection problem" : `Reading ${chain.name || "chain"}…`}</p>
         {error && <p className="boot-err">{error}</p>}
       </div>
@@ -89,7 +89,7 @@ function Desk({ ex }) {
     <div className="app">
       <div className="blueprint" aria-hidden="true" />
       <header className="top">
-        <div className="brand"><span className="mark">⌂</span><span>House<em>DEX</em></span></div>
+        <div className="brand"><span className="mark">⌂</span><span>Stox<em>home</em></span></div>
         <nav><a className="on">Trade</a><a href="#vault">Vault</a><a href="#funding">Funding</a><a href="#tape">Tape</a></nav>
         <div className="top-r">
           <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : chain.name}</span>
@@ -178,7 +178,7 @@ function Desk({ ex }) {
       {ex.wc?.pickerOpen && <WalletPicker wc={ex.wc} />}
       <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={chain.explorer} />
       <footer className="foot">
-        <span>HouseDEX — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
+        <span>Stoxhome — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
         <span>Index = smoothed oracle print · Mark = index × (1 + skew / skewScale)</span>
         {!USE_MOCK && deployment?.feeRecipient && (
           <span>Protocol fees: {chain.explorer
@@ -310,7 +310,7 @@ function Positions({ ex, setSheet }) {
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}<span className="count">{n}</span></button>
         ))}
       </div>
-      {tab === "ord" && <div className="empty"><b>No resting orders.</b><span>HouseDEX fills against the pool at mark — there is no order book to wait on.</span></div>}
+      {tab === "ord" && <div className="empty"><b>No resting orders.</b><span>Stoxhome fills against the pool at mark — there is no order book to wait on.</span></div>}
       {tab === "his" && (ex.history.length ? <History rows={ex.history} /> : <div className="empty"><b>No trades yet.</b><span>{ex.wallet.connected ? "Your opens, modifies and closes appear here." : "Connect a wallet to see your history."}</span></div>)}
       {tab === "pos" && ex.positions.length === 0 && <div className="empty"><b>No open positions.</b><span>{ex.wallet.connected ? "Pick a city above and open one from the order ticket." : "Connect a wallet to see your positions."}</span></div>}
       {tab === "pos" && ex.positions.length > 0 && <div className="tbl">
@@ -426,7 +426,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
   return (
     <section className="panel vault" id="vault">
       <div className="vault-l">
-        <p className="eyebrow">Liquidity vault · hUSDT <RealFunds /></p>
+        <p className="eyebrow">Liquidity vault · USDT <RealFunds /></p>
         <h3>Be the house.</h3>
         <p className="lede">LPs are the counterparty to every trade — earning fees, funding from the crowded side and trader losses.</p>
         <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>

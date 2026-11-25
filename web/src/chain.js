@@ -18,7 +18,7 @@ const CHAINS = {
 
 // Any other chain id is a custom/demo chain: name from VITE_CHAIN_NAME, RPC taken as given.
 const CUSTOM = {
-  name: import.meta.env.VITE_CHAIN_NAME || "HouseDEX Demo",
+  name: import.meta.env.VITE_CHAIN_NAME || "Stoxhome Demo",
   rpc: import.meta.env.VITE_RPC_URL,
   explorer: import.meta.env.VITE_EXPLORER_URL || null,
   currency: "ETH",

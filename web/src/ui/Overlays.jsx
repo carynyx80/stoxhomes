@@ -112,7 +112,7 @@ export function WalletPicker({ wc }) {
         )}
         {list && none && mobile && (
           <>
-            <p className="sheet-note">Open HouseDEX inside your wallet app's browser to connect.</p>
+            <p className="sheet-note">Open Stoxhome inside your wallet app's browser to connect.</p>
             <ul className="wlist">{deepLinks().map((w) => <li key={w.name}><a href={w.url}><WIcon w={w} /><span>Open in {w.name}</span><em>↗</em></a></li>)}</ul>
           </>
         )}
