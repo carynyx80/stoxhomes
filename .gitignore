@@ -7,3 +7,4 @@ web/dist/
 api/data/
 keeper/data/.publisher-state.json
 keeper/deployments.local.json
+brand/*.zip
