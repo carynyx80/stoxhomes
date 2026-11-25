@@ -1,0 +1,6 @@
+{
+  "name": "stoxhomes",
+  "private": true,
+  "description": "HouseDEX monorepo: contracts/, api/, keeper/, web/. Each Railway service sets its own build/start commands.",
+  "engines": { "node": "22.x" }
+}

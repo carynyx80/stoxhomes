@@ -4,3 +4,6 @@ contracts/cache/
 web/dist/
 .env
 *.log
+api/data/
+keeper/data/.publisher-state.json
+keeper/deployments.local.json

@@ -9,7 +9,12 @@ module.exports = {
     settings: { optimizer: { enabled: true, runs: 200 }, viaIR: true },
   },
   networks: {
-    localhost: { url: "http://127.0.0.1:8545" },
+    hardhat: { chainId: Number(process.env.HARDHAT_CHAIN_ID || 31337) },
+    localhost: {
+      url: process.env.LOCALHOST_RPC || "http://127.0.0.1:8545",
+      chainId: Number(process.env.HARDHAT_CHAIN_ID || 31337),
+      ...(PK ? { accounts: [PK] } : {}),
+    },
     bscTestnet: {
       url: process.env.BSC_TESTNET_RPC || "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
       chainId: 97,

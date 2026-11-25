@@ -31,5 +31,38 @@
         "index": 290
       }
     ]
+  },
+  "31338": {
+    "usdt": "0xcB86b76BBb2854b915f187326d99211977B556Ee",
+    "mockUsdt": true,
+    "oracle": "0x807210d49a511BD29D2626a8Dc88b4D078746E3c",
+    "exchange": "0xb050652eEA9e22C41074925564DAAe25a2746d3C",
+    "markets": [
+      {
+        "symbol": "NYC",
+        "name": "New York",
+        "index": 330
+      },
+      {
+        "symbol": "LA",
+        "name": "Los Angeles",
+        "index": 440
+      },
+      {
+        "symbol": "MIA",
+        "name": "Miami",
+        "index": 430
+      },
+      {
+        "symbol": "SF",
+        "name": "San Francisco",
+        "index": 350
+      },
+      {
+        "symbol": "LDN",
+        "name": "London",
+        "index": 290
+      }
+    ]
   }
 }
