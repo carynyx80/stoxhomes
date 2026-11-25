@@ -24,7 +24,7 @@ input { font: inherit; color: inherit; }
 .top { display: flex; align-items: center; gap: 32px; height: 68px; border-bottom: 1.5px solid var(--rule); }
 .brand { display: flex; align-items: center; gap: 10px; font: 400 26px/1 var(--serif); letter-spacing: -.02em; }
 .brand em { font-style: italic; font-weight: 300; }
-.brand .mark { display: grid; place-items: center; width: 30px; height: 30px; background: var(--ink); color: var(--paper); font-size: 18px; border-radius: 2px; }
+.brand .mark { display: grid; place-items: center; width: 34px; height: 34px; background: var(--ink); color: var(--paper); border-radius: 8px; flex: none; padding-top: 1px; }
 .top nav { display: flex; gap: 24px; font-weight: 500; }
 .top nav a { color: var(--mute); text-decoration: none; cursor: pointer; padding: 6px 0; border-bottom: 1.5px solid transparent; }
 .top nav a.on, .top nav a:hover { color: var(--ink); border-color: var(--ink); }

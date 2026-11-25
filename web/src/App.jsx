@@ -9,6 +9,7 @@ import { targetChainName } from "./data/wallet.js";
 import { API } from "./data/live.js";
 import Skyline from "./ui/Skyline.jsx";
 import Chart from "./ui/Chart.jsx";
+import { LogoMark } from "./ui/Logo.jsx";
 
 const usd = (v, d = 0) => "$" + v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 const compact = (v) => "$" + Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(v);
@@ -59,7 +60,7 @@ function Boot({ error }) {
     <div className="app">
       <div className="blueprint" aria-hidden="true" />
       <div className="boot">
-        <div className="brand"><span className="mark">⌂</span><span>Stox<em>home</em></span></div>
+        <div className="brand"><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></div>
         <p className="eyebrow">{error ? "Connection problem" : `Reading ${chain.name || "chain"}…`}</p>
         {error && <p className="boot-err">{error}</p>}
       </div>
@@ -89,7 +90,7 @@ function Desk({ ex }) {
     <div className="app">
       <div className="blueprint" aria-hidden="true" />
       <header className="top">
-        <div className="brand"><span className="mark">⌂</span><span>Stox<em>home</em></span></div>
+        <div className="brand"><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></div>
         <nav><a className="on">Trade</a><a href="#vault">Vault</a><a href="#funding">Funding</a><a href="#tape">Tape</a></nav>
         <div className="top-r">
           <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : chain.name}</span>
