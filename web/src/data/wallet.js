@@ -194,11 +194,12 @@ export function useWallet(notify) {
     try { await p?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }); } catch { /* not supported */ }
   }, [entry]);
 
-  const switchChain = useCallback(async () => {
+  const switchChain = useCallback(async (targetId) => {
     const p = entry?.provider;
     if (!p) return false;
     if (pending === "switch") { say("info", "Open your wallet to finish the pending request"); return false; }
-    const params = chainParams();
+    const target = Number.isFinite(Number(targetId)) && Number(targetId) > 0 ? Number(targetId) : chain.id;
+    const params = chainParams(target);
     setPending("switch");
     try {
       try {
@@ -208,11 +209,11 @@ export function useWallet(notify) {
         await p.request({ method: "wallet_addEthereumChain", params: [params] });
         // some wallets don't switch after adding
         const cid = toChainId(await p.request({ method: "eth_chainId" }));
-        if (cid !== chain.id) await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: params.chainId }] });
+        if (cid !== target) await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: params.chainId }] });
       }
       const cid = toChainId(await p.request({ method: "eth_chainId" }));
       setChainId(cid);
-      if (cid !== chain.id) { say("err", `Still on the wrong network. Switch to ${params.chainName} in your wallet.`); return false; }
+      if (cid !== target) { say("err", `Still on the wrong network. Switch to ${params.chainName} in your wallet.`); return false; }
       return true;
     } catch (e) {
       report(e, `Couldn't switch network. Switch to ${params.chainName} in your wallet.`);

@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useExchange, useHistorySeries, getFundingGrid, USE_MOCK, useNow, countdown } from "./data/useMarkets.js";
+import { useExchange, useHistorySeries, getFundingGrid, USE_MOCK, BACKEND, fetchFundingSnapshots, useNow, countdown } from "./data/useMarkets.js";
+import { FundsSheet } from "./ui/Funds.jsx";
+import AdminPage from "./ui/Admin.jsx";
+const ENGINE_MODE = BACKEND === "engine";
+const TREASURY = "0x106342ec570e207afda9fda63125d7a9071127f2";
 import { chain, deployment, CHAIN_ID } from "./chain.js";
-const REAL_FUNDS = chain.id === 56;
 const shortAddr = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
-const RealFunds = () => (REAL_FUNDS ? <span className="realfunds"><i />Real funds · unaudited</span> : null);
+const Custody = () => (ENGINE_MODE ? <span className="custody"><i />Custodial · funds held by Stoxhome</span> : null);
+const isAdminRoute = () => typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
 import { Sheet, Toasts, WalletPicker } from "./ui/Overlays.jsx";
 import { targetChainName } from "./data/wallet.js";
 import { API } from "./data/live.js";
@@ -52,7 +56,7 @@ function printState(m, now) {
 export default function App() {
   const ex = useExchange();
   if (!ex.ready) return <Boot error={ex.error} />;
-  return <Desk ex={ex} />;
+  return <Desk ex={ex} admin={isAdminRoute()} />;
 }
 
 function Boot({ error }) {
@@ -61,15 +65,16 @@ function Boot({ error }) {
       <div className="blueprint" aria-hidden="true" />
       <div className="boot">
         <div className="brand"><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></div>
-        <p className="eyebrow">{error ? "Connection problem" : `Reading ${chain.name || "chain"}…`}</p>
+        <p className="eyebrow">{error ? "Connection problem" : ENGINE_MODE ? "Connecting to the exchange…" : `Reading ${chain.name || "chain"}…`}</p>
         {error && <p className="boot-err">{error}</p>}
       </div>
     </div>
   );
 }
 
-function Desk({ ex }) {
+function Desk({ ex, admin }) {
   const now = useNow() + (ex.clockOffset || 0);
+  const [funds, setFunds] = useState(null);
   const [sel, setSel] = useState(0);
   const [range, setRange] = useState("1Y");
   const [sheet, setSheet] = useState(null);
@@ -91,19 +96,32 @@ function Desk({ ex }) {
       <div className="blueprint" aria-hidden="true" />
       <header className="top">
         <div className="brand"><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></div>
-        <nav><a className="on">Trade</a><a href="#vault">Vault</a><a href="#funding">Funding</a><a href="#tape">Tape</a></nav>
+        {admin
+          ? <nav><a href="/">Trade</a><a className="on" href="/admin">Admin</a></nav>
+          : <nav><a className="on">Trade</a><a href="#vault">Vault</a><a href="#funding">Funding</a><a href="#tape">Tape</a>{ex.isAdmin && <a href="/admin">Admin</a>}</nav>}
         <div className="top-r">
-          <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : chain.name}</span>
-          {ex.faucet && ex.wallet.connected && <button className="faucet" disabled={!!ex.busy} onClick={() => ex.actions.faucet()}>{ex.busy === "faucet" ? "Funding…" : "Get test USDT"}</button>}
+          <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : ENGINE_MODE ? (ex.error ? "Offline" : "Live") : chain.name}</span>
+          {!ENGINE_MODE && ex.faucet && ex.wallet.connected && <button className="faucet" disabled={!!ex.busy} onClick={() => ex.actions.faucet()}>{ex.busy === "faucet" ? "Funding…" : "Get test USDT"}</button>}
           {ex.wc?.wrongChain && <button className="wallet warn" disabled={ex.wc.pending === "switch"} onClick={() => ex.wc.switchChain()}>{ex.wc.pending === "switch" ? "Switching…" : "Wrong network"}</button>}
-          {ex.wallet.connected
-            ? <button className="wallet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{usd(ex.wallet.balance)} · {ex.wallet.address}</button>
-            : <button className="wallet" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet"}</button>}
+          {ENGINE_MODE && ex.wallet.connected && !ex.wallet.signedIn
+            ? <>
+                <button className="faucet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{ex.wallet.address}</button>
+                <button className="wallet" disabled={ex.signing} onClick={() => ex.actions.signIn()}>{ex.signing ? "Check your wallet…" : "Sign in"}</button>
+              </>
+            : ENGINE_MODE && ex.wallet.connected
+              ? <>
+                  <button className="faucet balbtn" onClick={() => setFunds("deposit")} title="Deposit or withdraw">{usd(ex.wallet.balance, 2)} <small>available</small></button>
+                  <button className="wallet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{ex.wallet.address}</button>
+                </>
+              : ex.wallet.connected
+                ? <button className="wallet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{usd(ex.wallet.balance)} · {ex.wallet.address}</button>
+                : <button className="wallet" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet"}</button>}
         </div>
       </header>
 
       {ex.error && <div className="errbar">{ex.error}</div>}
       <Ticker markets={ex.markets} />
+      {admin ? <AdminPage ex={ex} /> : <>
 
       <section className="hero">
         <div className="hero-sky" aria-hidden="true">{["LDN", "NYC", "SF", "MIA", "LA"].map((k, i) => <Skyline key={k} symbol={k} seed={i + 11} />)}</div>
@@ -162,7 +180,7 @@ function Desk({ ex }) {
             <SkewBar m={m} />
           </div>
         </section>
-        <Ticket m={m} ex={ex} ps={printState(m, now)} />
+        <Ticket m={m} ex={ex} ps={printState(m, now)} openFunds={setFunds} />
       </main>
 
       <section className="row2">
@@ -175,13 +193,17 @@ function Desk({ ex }) {
         <Vault ex={ex} pool={ex.pool} now={now} cooldown={ex.params.withdrawCooldown} setSheet={setSheet} />
       </section>
 
+      </>}
       {sheet && <Sheet sheet={sheet} ex={ex} onClose={() => setSheet(null)} />}
+      {funds && ex.wallet.signedIn && <FundsSheet ex={ex} tab={funds} onClose={() => setFunds(null)} />}
       {ex.wc?.pickerOpen && <WalletPicker wc={ex.wc} />}
-      <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={chain.explorer} />
+      <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={ENGINE_MODE ? ex.explorer : chain.explorer} />
       <footer className="foot">
-        <span>Stoxhome — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
+        {ENGINE_MODE
+          ? <span>Stoxhome holds customer deposits in its treasury wallet <a href={`https://bscscan.com/address/${TREASURY}`} target="_blank" rel="noreferrer">{shortAddr("0x106342ec570E207afDa9fDA63125d7a9071127f2")}</a>. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
+          : <span>Stoxhome — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>}
         <span>Index = smoothed oracle print · Mark = index × (1 + skew / skewScale)</span>
-        {!USE_MOCK && deployment?.feeRecipient && (
+        {!USE_MOCK && !ENGINE_MODE && deployment?.feeRecipient && (
           <span>Protocol fees: {chain.explorer
             ? <a href={`${chain.explorer}/address/${deployment.feeRecipient}`} target="_blank" rel="noreferrer">{shortAddr(deployment.feeRecipient)}</a>
             : shortAddr(deployment.feeRecipient)}</span>
@@ -229,7 +251,7 @@ function Ticker({ markets }) {
   return <div className="ticker"><div className="ticker-in">{row}{row}{row}</div></div>;
 }
 
-function Ticket({ m, ex, ps }) {
+function Ticket({ m, ex, ps, openFunds }) {
   const [side, setSide] = useState("long");
   const [marginStr, setMargin] = useState("1000");
   const margin = Math.max(0, Number(marginStr) || 0);
@@ -248,7 +270,7 @@ function Ticket({ m, ex, ps }) {
   return (
     <aside className="panel ticket" style={{ "--heat": color }}>
       <div className="tk-head">
-        <span className="eyebrow">Order ticket <RealFunds /></span>
+        <span className="eyebrow">Order ticket <Custody /></span>
         <span className="tk-mkt">{m.name}</span>
       </div>
       <div className={"sides " + side}>
@@ -256,7 +278,7 @@ function Ticket({ m, ex, ps }) {
         <button className={side === "short" ? "on" : ""} onClick={() => setSide("short")}>Short <small>price falls</small></button>
       </div>
       <label className="field">
-        <span>Margin <small>{ex.wallet.connected ? <>Balance {usd(ex.wallet.balance)}{ex.faucet && ex.live && <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>+ test USDT</button>}</> : "Wallet not connected"}</small></span>
+        <span>Margin <small>{ENGINE_MODE && ex.wallet.signedIn ? <>Available {usd(ex.wallet.balance, 2)}<button type="button" className="tk-faucet" onClick={() => openFunds("deposit")}>Deposit</button></> : ENGINE_MODE && ex.wallet.connected ? "Sign in to see your balance" : ex.wallet.connected ? <>Balance {usd(ex.wallet.balance)}{ex.faucet && ex.live && <button type="button" className="tk-faucet" onClick={() => ex.actions.faucet()}>+ test USDT</button>}</> : "Wallet not connected"}</small></span>
         <div className="inp"><input type="number" min="0" inputMode="decimal" value={marginStr} onChange={(e) => setMargin(e.target.value)} aria-label="Margin" /><b>USDT</b></div>
       </label>
 
@@ -290,6 +312,8 @@ function Ticket({ m, ex, ps }) {
         ? <button className="go locked" disabled>Close-only{ps.left > 0 ? ` · opens in ${countdown(ps.left)}` : " · awaiting print"}</button>
         : !ex.wallet.connected
           ? <button className="go long" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet to trade"}</button>
+          : ENGINE_MODE && !ex.wallet.signedIn
+            ? <button className="go long" disabled={ex.signing} onClick={() => ex.actions.signIn()}>{ex.signing ? "Check your wallet…" : "Sign in to trade"}</button>
           : ex.wc?.wrongChain
             ? <button className="go switch" disabled={ex.wc.pending === "switch"} onClick={() => ex.wc.switchChain()}>{ex.wc.pending === "switch" ? "Confirm in wallet…" : `Switch to ${targetChainName()}`}</button>
           : hasPos
@@ -331,6 +355,7 @@ function Positions({ ex, setSheet }) {
                 <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "increase", pos: p })}>+ Increase</button>
                 <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "reduce", pos: p })}>− Reduce</button>
                 <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "addMargin", pos: p })}>+ Margin</button>
+                {ENGINE_MODE && <button className="mini" disabled={!!ex.busy} onClick={() => setSheet({ type: "removeMargin", pos: p })}>− Margin</button>}
                 <button className="ghost" disabled={!!ex.busy} onClick={() => ex.actions.close({ marketId: p.marketId })}>{ex.busy === "close" ? "Closing…" : "Close"}</button>
               </span>
             </div>
@@ -427,7 +452,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
   return (
     <section className="panel vault" id="vault">
       <div className="vault-l">
-        <p className="eyebrow">Liquidity vault · USDT <RealFunds /></p>
+        <p className="eyebrow">Liquidity vault · USDT <Custody /></p>
         <h3>Be the house.</h3>
         <p className="lede">LPs are the counterparty to every trade — earning fees, funding from the crowded side and trader losses.</p>
         <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
@@ -459,7 +484,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
           </div>
         </div>}
         <div className="vbtns">
-          <button className="go long" disabled={!!ex.busy} onClick={() => (ex.wallet.connected ? setSheet({ type: "deposit" }) : ex.actions.connect())}>{ex.busy === "deposit" ? "Depositing…" : "Deposit USDT"}</button>
+          <button className="go long" disabled={!!ex.busy} onClick={() => (!ex.wallet.connected ? ex.actions.connect() : ENGINE_MODE && !ex.wallet.signedIn ? ex.actions.signIn() : setSheet({ type: "deposit" }))}>{ex.busy === "deposit" ? "Depositing…" : "Deposit USDT"}</button>
           <button className="ghost" disabled={!!ex.busy || !!w || (ex.wallet.connected && pool.shares <= 0)} onClick={() => setSheet({ type: "requestWithdraw" })}>Request withdraw</button>
         </div>
       </div>
@@ -473,11 +498,15 @@ function useFundingGrid(markets, live, now) {
   useEffect(() => {
     if (!live) return;
     let stop = false;
-    Promise.all(markets.map((m) => fetch(`${API}/markets/${m.id}/history?range=1M`).then((r) => r.json()).catch(() => null))).then((hs) => {
+    const get = (id) => (ENGINE_MODE
+      ? fetchFundingSnapshots(id)
+      : fetch(`${API}/markets/${id}/history?range=1M`).then((r) => r.json()).then((h) => (h.snapshots || []).map((s) => ({ t: s.timestamp * 1000, f: s.fundingRatePerDay })))
+    ).catch(() => []);
+    Promise.all(markets.map((m) => get(m.id))).then((hs) => {
       if (stop) return;
       setGrid(hs.map((h, i) => Array.from({ length: 14 }, (_, d) => {
         const end = (day - 13 + d + 1) * 86_400_000, start = end - 86_400_000;
-        const xs = (h?.snapshots || []).filter((s) => s.timestamp * 1000 >= start && s.timestamp * 1000 < end).map((s) => s.fundingRatePerDay);
+        const xs = h.filter((s) => s.t >= start && s.t < end).map((s) => s.f);
         if (d === 13 && !xs.length) return markets[i].funding;
         return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
       })));

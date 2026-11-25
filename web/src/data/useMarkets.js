@@ -3,8 +3,11 @@
 import { useEffect, useState } from "react";
 import * as mock from "./mock.js";
 import { useLiveExchange, fetchHistory } from "./live.js";
+import { useEngineExchange, ENGINE } from "./engine.js";
 
-export const USE_MOCK = (import.meta.env.VITE_USE_MOCK ?? "true") !== "false";
+// VITE_BACKEND: "engine" (default, custodial off-chain exchange), "mock", or "contracts" (legacy on-chain source).
+export const BACKEND = import.meta.env.VITE_BACKEND || (import.meta.env.VITE_USE_MOCK === "true" ? "mock" : "engine");
+export const USE_MOCK = BACKEND === "mock";
 
 /*
  Live mapping (WAD -> display numbers via ethers.formatUnits; raw bigints kept on `raw`):
@@ -39,14 +42,35 @@ function useMockExchange() {
   };
 }
 
-export const useExchange = USE_MOCK ? useMockExchange : useLiveExchange;
+export const useExchange = BACKEND === "mock" ? useMockExchange : BACKEND === "contracts" ? useLiveExchange : useEngineExchange;
+
+const RANGE_S = { "1M": 30 * 86400, "6M": 182 * 86400, "1Y": 365 * 86400, "5Y": 5 * 365 * 86400 };
+async function fetchEngineHistory(market, range, nowMs) {
+  const to = nowMs, from = nowMs - RANGE_S[range] * 1000;
+  let pts = [];
+  try {
+    const r = await fetch(`${ENGINE}/markets/${market.id}/history?range=${range}`, { signal: AbortSignal.timeout(8000) });
+    const h = await r.json();
+    pts = [
+      ...(h.prints || []).map((p) => ({ t: Number(p.at) * 1000, index: Number(p.value), mark: Number(p.value) })),
+      ...(h.snapshots || []).map((s) => ({ t: Number(s.at) * 1000, index: Number(s.indexPrice), mark: Number(s.markPrice) })),
+    ].filter((p) => p.t >= from && Number.isFinite(p.index)).sort((a, b) => a.t - b.t);
+  } catch { pts = []; }
+  const first = pts[0] ?? { index: market.index };
+  return [{ t: from, index: first.index, mark: first.index }, ...pts, { t: to, index: market.index, mark: market.mark }];
+}
+export async function fetchFundingSnapshots(id) {
+  const r = await fetch(`${ENGINE}/markets/${id}/history?range=1M`, { signal: AbortSignal.timeout(8000) });
+  const h = await r.json();
+  return (h.snapshots || []).map((s) => ({ t: Number(s.at) * 1000, f: Number(s.fundingRatePerDay) }));
+}
 
 export function useHistorySeries(market, range, nowMs, refreshKey) {
   const [data, setData] = useState(() => (USE_MOCK ? mock.getHistory(market.id, range) : null));
   useEffect(() => {
     if (USE_MOCK) { setData(mock.getHistory(market.id, range)); return; }
     let stop = false;
-    fetchHistory(market, range, nowMs).then((d) => { if (!stop) setData(d); });
+    (BACKEND === "engine" ? fetchEngineHistory : fetchHistory)(market, range, nowMs).then((d) => { if (!stop) setData(d); });
     return () => { stop = true; };
   }, [market.id, range, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
   return data;
