@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useExchange, useHistorySeries, getFundingGrid, USE_MOCK, useNow, countdown } from "./data/useMarkets.js";
-import { chain, deployment } from "./chain.js";
+import { chain, deployment, CHAIN_ID } from "./chain.js";
 const REAL_FUNDS = chain.id === 56;
 const shortAddr = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const RealFunds = () => (REAL_FUNDS ? <span className="realfunds"><i />Real funds · unaudited</span> : null);
@@ -178,7 +178,7 @@ function Desk({ ex }) {
       {ex.wc?.pickerOpen && <WalletPicker wc={ex.wc} />}
       <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={chain.explorer} />
       <footer className="foot">
-        <span>HouseDEX — prototype on BNB Smart Chain testnet. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
+        <span>HouseDEX — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
         <span>Index = smoothed oracle print · Mark = index × (1 + skew / skewScale)</span>
         {!USE_MOCK && deployment?.feeRecipient && (
           <span>Protocol fees: {chain.explorer

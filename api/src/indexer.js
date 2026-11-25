@@ -204,8 +204,24 @@ export class Indexer extends EventEmitter {
     return run;
   }
 
+  /** Wipe all indexed data if the chain was reset (new genesis, e.g. a restarted demo chain). */
+  async _checkChainReset(head) {
+    const genesis = (await this.provider.send("eth_getBlockByNumber", ["0x0", false]))?.hash;
+    const stored = this.db.getMeta("genesisHash");
+    const lastBlock = Number(this.db.getMeta("lastBlock") ?? -1);
+    const reset = (stored && genesis && stored !== genesis) || lastBlock - head > this.cfg.reorgDepth;
+    if (reset) {
+      console.warn(`[indexer] chain reset detected (genesis ${stored} -> ${genesis}, last ${lastBlock}, head ${head}); clearing data`);
+      const tables = this.db.all("SELECT name FROM sqlite_master WHERE type='table'").map((r) => r.name);
+      this.db.tx(() => { for (const t of tables) this.db.run(`DELETE FROM ${t}`); });
+      this.blockTs.clear();
+    }
+    if (genesis && (reset || !stored)) this.db.setMeta("genesisHash", genesis);
+  }
+
   async _syncOnce() {
     const head = Number(await this.provider.send("eth_blockNumber", [])); // uncached
+    await this._checkChainReset(head);
     const last = Number(this.db.getMeta("lastBlock") ?? this.cfg.startBlock - 1);
     const from = Math.max(this.cfg.startBlock, Math.min(last, head) - this.cfg.reorgDepth + 1);
     if (from > head) return [];
