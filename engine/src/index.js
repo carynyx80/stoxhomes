@@ -6,7 +6,7 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 async function main() {
   const config = loadConfig();
   const svc = createApp(config, { log });
-  if (config.watcherEnabled) {
+  if (config.watcherEnabled && config.chain === 'evm') {
     try {
       const id = await svc.rpc.chainId();
       if (id !== config.chainId) throw new Error(`RPC chainId ${id} != CHAIN_ID ${config.chainId}`);
@@ -16,7 +16,7 @@ async function main() {
     }
   }
   const port = await svc.start(config.port);
-  log(`stoxhome engine listening on :${port} (db ${config.dbPath}, chain ${config.chainId})`);
+  log(`stoxhome engine listening on :${port} (db ${config.dbPath}, chain ${config.chain} ${config.chainId})`);
   const shutdown = async (sig) => {
     log(`${sig}: shutting down`);
     try { await svc.stop(); } finally { process.exit(0); }

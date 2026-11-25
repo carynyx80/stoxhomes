@@ -43,7 +43,7 @@ export class Engine extends EventEmitter {
   constructor({ db, companyAddress, now }) {
     super();
     this.db = db;
-    this.company = companyAddress.toLowerCase();
+    this.company = companyAddress; // already normalized by the chain config (EVM lowercase, Solana base58)
     this.now = now || (() => Math.floor(Date.now() / 1000));
     this._events = [];
     this._txId = 0n;
@@ -83,7 +83,7 @@ export class Engine extends EventEmitter {
       insPrint: db.prepare('INSERT INTO prints (market_id, value, source, at) VALUES (?, ?, ?, ?)'),
       insSnap: db.prepare('INSERT INTO snapshots (market_id, at, index_price, mark_price, funding_rate, long_oi, short_oi) VALUES (?, ?, ?, ?, ?, ?, ?)'),
       wd: db.prepare('SELECT * FROM withdrawals WHERE id = ?'),
-      insWd: db.prepare('INSERT INTO withdrawals (address, amount, to_addr, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'),
+      insWd: db.prepare('INSERT INTO withdrawals (address, amount, to_addr, status, created_at, updated_at, token) VALUES (?, ?, ?, ?, ?, ?, ?)'),
       setWd: db.prepare('UPDATE withdrawals SET status = ?, tx_hash = COALESCE(?, tx_hash), reason = COALESCE(?, reason), updated_at = ? WHERE id = ?'),
     };
   }
@@ -799,12 +799,24 @@ export class Engine extends EventEmitter {
     });
   }
 
-  requestWithdrawal(address, amount, minWithdraw) {
+  /** Credit an external deposit (chain adapters call this inside their own transaction). */
+  creditExternal(address, amount, ref, info = {}) {
+    return this.tx(() => {
+      if (amount <= 0n) throw new AppError('MIN_AMOUNT', 'Amount must be positive');
+      this.ensureUser(address);
+      this.post([[acct.deposits, -amount], [acct.available(address), amount]], ref);
+      this._emit('deposit', { address, amount: fmtUsdt(amount), ...info });
+      this._emit('me', address);
+      return true;
+    });
+  }
+
+  requestWithdrawal(address, amount, minWithdraw, token = null) {
     if (amount < minWithdraw) throw new AppError('MIN_AMOUNT', `Minimum withdrawal is ${fmtUsdt(minWithdraw)} USDT`);
     return this.tx(() => {
       const now = this.now();
       if (this.balance(acct.available(address)) < amount) throw new AppError('INSUFFICIENT_BALANCE', 'Insufficient available balance');
-      const r = this.s.insWd.run(address, amount, address, 'pending', now, now);
+      const r = this.s.insWd.run(address, amount, address, 'pending', now, now, token);
       this.post([[acct.available(address), -amount], [acct.locked(address), amount]], `withdraw_request:${r.lastInsertRowid}`);
       const w = this.withdrawalView(this.s.wd.get(r.lastInsertRowid));
       this._emit('withdrawal', { address, ...w });
@@ -848,7 +860,10 @@ export class Engine extends EventEmitter {
   }
 
   withdrawalView(w) {
-    return { id: n(w.id), amount: fmtUsdt(B(w.amount)), to: w.to_addr, status: w.status, txHash: w.tx_hash || null, at: n(w.created_at), reason: w.reason || null };
+    return {
+      id: n(w.id), amount: fmtUsdt(B(w.amount)), to: w.to_addr, status: w.status, txHash: w.tx_hash || null,
+      ...(w.token ? { token: w.token, signature: w.tx_hash || null } : {}), at: n(w.created_at), reason: w.reason || null,
+    };
   }
 
   // ------------------------------------------------------------------- views

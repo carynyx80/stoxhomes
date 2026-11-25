@@ -86,5 +86,7 @@ export function openDb(file) {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  const cols = db.prepare('PRAGMA table_info(withdrawals)').all().map((c) => c.name);
+  if (!cols.includes('token')) db.exec('ALTER TABLE withdrawals ADD COLUMN token TEXT');
   return db;
 }

@@ -1,3 +1,4 @@
+import "./polyfills.js";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource/fraunces/latin-300.css";

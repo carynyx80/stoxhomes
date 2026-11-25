@@ -245,6 +245,24 @@ export class Watcher {
     }));
   }
 
+  // ---- adapter interface (shared with SolanaAdapter) ----
+  configView() {
+    return { chainId: this.cfg.chainId, companyAddress: this.cfg.companyAddress, usdt: { address: this.cfg.usdtAddress, decimals: this.cfg.usdtDecimals }, confirmations: this.cfg.confirmations };
+  }
+
+  health() { return { lastBlock: this.cursor(), chainId: this.cfg.chainId }; }
+
+  withdrawToken() { return null; }
+
+  markPaid(id, body) { return this.verifyAndMarkPaid(id, body.txHash); }
+
+  async overview(engine) {
+    const onchain = this.toMicro(await this.rpc.balanceOf(this.cfg.usdtAddress, this.cfg.companyAddress));
+    return { onchain, fields: { companyUsdtOnChain: fmtUsdt(onchain) }, liabilities: engine.liabilities() };
+  }
+
+  extraRoutes() {}
+
   start() {
     if (this.running) return;
     this.running = true;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { INSTALL, deepLinks, isMobile, targetChainName } from "../data/wallet.js";
+import { SOL_INSTALL, solDeepLinks } from "../data/solanaWallet.js";
 
 const usd = (v, d = 2) => (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 
@@ -111,13 +112,13 @@ export function WalletPicker({ wc }) {
         {list && none && !mobile && (
           <>
             <p className="sheet-note">No browser wallet detected. Install one, then reload this page.</p>
-            <ul className="wlist">{INSTALL.map((w) => <li key={w.name}><a href={w.url} target="_blank" rel="noreferrer"><WIcon w={w} /><span>{w.name}</span><em>Install ↗</em></a></li>)}</ul>
+            <ul className="wlist">{(wc.kind === "solana" ? SOL_INSTALL : INSTALL).map((w) => <li key={w.name}><a href={w.url} target="_blank" rel="noreferrer"><WIcon w={w} /><span>{w.name}</span><em>Install ↗</em></a></li>)}</ul>
           </>
         )}
         {list && none && mobile && (
           <>
             <p className="sheet-note">Open Stoxhome inside your wallet app's browser to connect.</p>
-            <ul className="wlist">{deepLinks().map((w) => <li key={w.name}><a href={w.url}><WIcon w={w} /><span>Open in {w.name}</span><em>↗</em></a></li>)}</ul>
+            <ul className="wlist">{(wc.kind === "solana" ? solDeepLinks() : deepLinks()).map((w) => <li key={w.name}><a href={w.url}><WIcon w={w} /><span>Open in {w.name}</span><em>↗</em></a></li>)}</ul>
           </>
         )}
         {busy && <p className="sheet-note">Approve the connection in your wallet…</p>}

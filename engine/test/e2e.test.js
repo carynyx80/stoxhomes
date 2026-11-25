@@ -72,7 +72,7 @@ before(async () => {
 
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-e2e-'));
   const config = loadConfig({
-    NODE_ENV: 'production', DB_PATH: path.join(tmp, 'engine.db'), RPC_URL: `http://127.0.0.1:1,${RPC}`, CHAIN_ID: '31337',
+    CHAIN: 'evm', NODE_ENV: 'production', DB_PATH: path.join(tmp, 'engine.db'), RPC_URL: `http://127.0.0.1:1,${RPC}`, CHAIN_ID: '31337',
     USDT_ADDRESS: await usdt.getAddress(), USDT_DECIMALS: '18', COMPANY_ADDRESS: await company.getAddress(),
     START_BLOCK: String(startBlock), CONFIRMATIONS: '3', LOG_CHUNK: '5', SESSION_SECRET: 'test-secret-test-secret-123',
     ALLOWED_DOMAIN: 'www.stoxhome.xyz', CORS_ORIGINS: 'https://www.stoxhome.xyz', LOOP_MS: '200', WATCHER: '0',

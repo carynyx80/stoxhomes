@@ -3,7 +3,7 @@ import { useExchange, useHistorySeries, getFundingGrid, USE_MOCK, BACKEND, fetch
 import { FundsSheet } from "./ui/Funds.jsx";
 import AdminPage from "./ui/Admin.jsx";
 const ENGINE_MODE = BACKEND === "engine";
-const TREASURY = "0x106342ec570e207afda9fda63125d7a9071127f2";
+const TREASURY = "8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx";
 import { chain, deployment, CHAIN_ID } from "./chain.js";
 const shortAddr = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const Custody = () => (ENGINE_MODE ? <span className="custody"><i />Custodial · funds held by Stoxhome</span> : null);
@@ -200,7 +200,7 @@ function Desk({ ex, admin }) {
       <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={ENGINE_MODE ? ex.explorer : chain.explorer} />
       <footer className="foot">
         {ENGINE_MODE
-          ? <span>Stoxhome holds customer deposits in its treasury wallet <a href={`https://bscscan.com/address/${TREASURY}`} target="_blank" rel="noreferrer">{shortAddr("0x106342ec570E207afDa9fDA63125d7a9071127f2")}</a>. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
+          ? <span>Stoxhome holds customer deposits in its treasury wallet <a href={`https://solscan.io/account/${TREASURY}`} target="_blank" rel="noreferrer">{TREASURY.slice(0, 4)}…{TREASURY.slice(-4)}</a>. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
           : <span>Stoxhome — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>}
         <span>Index = smoothed oracle print · Mark = index × (1 + skew / skewScale)</span>
         {!USE_MOCK && !ENGINE_MODE && deployment?.feeRecipient && (

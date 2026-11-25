@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws';
 import { openDb } from './db.js';
 import { Engine, MARKETS } from './engine.js';
 import { Rpc, Watcher } from './chain.js';
+import { SolRpc, SolanaAdapter } from './solana.js';
 import { Auth, normAddress } from './auth.js';
 import { AppError, parseUsdt, parseWad, parseSignedWad, parseShares, fmtUsdt, fmtWad, formatUnits, abs } from './fixed.js';
 import { PARAMS } from './math.js';
@@ -35,9 +36,10 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   const nowFn = now || (() => Math.floor(Date.now() / 1000));
   const db = openDb(config.dbPath);
   const engine = new Engine({ db, companyAddress: config.companyAddress, now: nowFn }).init();
-  rpc = rpc || new Rpc(config.rpcUrls, { log });
-  const watcher = new Watcher({ engine, rpc, config, log });
-  const auth = new Auth({ db, secret: config.sessionSecret, domain: config.allowedDomain, chainId: config.chainId, companyAddress: config.companyAddress, now: nowFn });
+  const solana = config.chain === 'solana';
+  rpc = rpc || (solana ? new SolRpc(config.rpcUrls, { log }) : new Rpc(config.rpcUrls, { log }));
+  const watcher = solana ? new SolanaAdapter({ engine, rpc, config, log }) : new Watcher({ engine, rpc, config, log });
+  const auth = new Auth({ db, secret: config.sessionSecret, domain: config.allowedDomain, chainId: config.chainId, companyAddress: config.companyAddress, now: nowFn, chain: solana ? 'solana' : 'evm' });
   const ipLimiter = new RateLimiter(config.rateLimitPerMin);
   const addrLimiter = new RateLimiter(config.rateLimitAddrPerMin);
 
@@ -86,8 +88,7 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
 
   // -------------------------------------------------------------- public
   app.get('/config', h(() => ({
-    chainId: config.chainId, companyAddress: config.companyAddress, usdt: { address: config.usdtAddress, decimals: config.usdtDecimals },
-    confirmations: config.confirmations, minDeposit: fmtUsdt(config.minDeposit), minWithdraw: fmtUsdt(config.minWithdraw),
+    ...watcher.configView(), minDeposit: fmtUsdt(config.minDeposit), minWithdraw: fmtUsdt(config.minWithdraw),
     fees: {
       tradingBps: Number(PARAMS.tradingFeeBps), maintenanceBps: Number(PARAMS.maintenanceMarginBps),
       liquidationFeeBps: Number(PARAMS.liquidationFeeBps), maxLeverage: Number(PARAMS.maxLeverage),
@@ -108,7 +109,7 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   }));
   app.get('/vault', h(() => engine.vaultView()));
   app.get('/stats', h(() => engine.stats()));
-  app.get('/health', (req, res) => res.json({ ok: true, lastBlock: watcher.cursor(), chainId: config.chainId, watcherError: watcher.lastError }));
+  app.get('/health', (req, res) => res.json({ ok: true, ...watcher.health(), watcherError: watcher.lastError }));
 
   // ------------------------------------------------------------- account
   app.get('/me', authed, h((req) => engine.me(req.user.address)));
@@ -151,18 +152,16 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
   app.post('/vault/request-withdraw', authed, h((req) => engine.vaultRequestWithdraw(req.user.address, parseShares(reqStr(body(req).shares, 'shares')))));
   app.post('/vault/cancel-withdraw', authed, h((req) => engine.vaultCancelWithdraw(req.user.address)));
   app.post('/vault/withdraw', authed, h((req) => ({ amount: fmtUsdt(engine.vaultWithdraw(req.user.address).amount) })));
-  app.post('/withdrawals', authed, h((req) => engine.requestWithdrawal(req.user.address, parseUsdt(reqStr(body(req).amount, 'amount')), config.minWithdraw)));
+  app.post('/withdrawals', authed, h((req) => engine.requestWithdrawal(req.user.address, parseUsdt(reqStr(body(req).amount, 'amount')), config.minWithdraw, watcher.withdrawToken(body(req).token))));
   app.post('/withdrawals/:id/cancel', authed, h((req) => engine.cancelWithdrawal(req.user.address, posInt(req.params.id, 'id'))));
 
   // --------------------------------------------------------------- admin
   app.get('/admin/overview', admin, h(async () => {
-    const raw = await rpc.balanceOf(config.usdtAddress, config.companyAddress);
-    const onchain = watcher.toMicro(raw);
-    const l = engine.liabilities();
+    const { onchain, fields, liabilities: l } = await watcher.overview(engine);
     const p = db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(amount), 0) AS s FROM withdrawals WHERE status = 'pending'").get();
     const ledger = engine.checkLedger();
     return {
-      companyUsdtOnChain: fmtUsdt(onchain),
+      ...fields,
       liabilities: { users: fmtUsdt(l.users), vault: fmtUsdt(l.vault), protocolFees: fmtUsdt(l.protocolFees), total: fmtUsdt(l.total) },
       surplus: fmtUsdt(onchain - l.total),
       pendingWithdrawals: { count: Number(p.c), amount: fmtUsdt(BigInt(p.s)) },
@@ -176,7 +175,7 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
       : db.prepare('SELECT * FROM withdrawals WHERE status = ? ORDER BY id LIMIT 500').all(status);
     return rows.map((w) => ({ ...engine.withdrawalView(w), address: w.address }));
   }));
-  app.post('/admin/withdrawals/:id/paid', admin, h((req) => watcher.verifyAndMarkPaid(posInt(req.params.id, 'id'), body(req).txHash)));
+  app.post('/admin/withdrawals/:id/paid', admin, h((req) => watcher.markPaid(posInt(req.params.id, 'id'), body(req))));
   app.post('/admin/withdrawals/:id/reject', admin, h((req) => {
     const reason = body(req).reason;
     if (reason !== undefined && (typeof reason !== 'string' || reason.length > 500)) throw new AppError('BAD_INPUT', 'reason must be a string');
@@ -201,6 +200,7 @@ export function createApp(config, { now, rpc, log = console.log } = {}) {
     const r = engine.seedVault(parseUsdt(reqStr(body(req).amount, 'amount')));
     return { shares: formatUnits(r.shares, 12) };
   }));
+  watcher.extraRoutes(app, { authed, admin, h, body });
   app.get('/admin/ledger-check', admin, h(() => { const c = engine.checkLedger(); return { ok: c.ok, total: c.total.toString(), errors: c.errors }; }));
 
   app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND', message: 'Not found' }));

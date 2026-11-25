@@ -23,7 +23,7 @@ async function api(method, p, body, headers = {}) {
 before(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-http-'));
   const config = loadConfig({
-    DB_PATH: path.join(tmp, 'e.db'), SESSION_SECRET: 'x'.repeat(32), CORS_ORIGINS: 'https://www.stoxhome.xyz', WATCHER: '0',
+    CHAIN: 'evm', DB_PATH: path.join(tmp, 'e.db'), SESSION_SECRET: 'x'.repeat(32), CORS_ORIGINS: 'https://www.stoxhome.xyz', WATCHER: '0',
     RATE_LIMIT_PER_MIN: '1000', RATE_LIMIT_ADDR_PER_MIN: '40', LOOP_MS: '100000',
   });
   svc = createApp(config, { now, rpc: fakeRpc, log: () => {} });
@@ -38,8 +38,8 @@ after(async () => {
 
 test('config: required env', () => {
   assert.throws(() => loadConfig({}), /SESSION_SECRET/);
-  assert.throws(() => loadConfig({ NODE_ENV: 'production', SESSION_SECRET: 'y'.repeat(32) }), /START_BLOCK/);
-  const c = loadConfig({ SESSION_SECRET: 'y'.repeat(32) });
+  assert.throws(() => loadConfig({ CHAIN: 'evm', NODE_ENV: 'production', SESSION_SECRET: 'y'.repeat(32) }), /START_BLOCK/);
+  const c = loadConfig({ CHAIN: 'evm', SESSION_SECRET: 'y'.repeat(32) });
   assert.equal(c.port, 4000);
   assert.equal(c.chainId, 56);
   assert.equal(c.confirmations, 15);

@@ -7,9 +7,17 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import { ethers } from "ethers";
+import nacl from "tweetnacl";
+import bs58 from "bs58";
+import { PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+const ata = (owner, mint) => getAssociatedTokenAddressSync(new PublicKey(mint), new PublicKey(owner), true).toBase58();
 
 const PORT = Number(process.env.PORT || 8787);
-const COMPANY = ethers.getAddress(process.env.STUB_COMPANY || "0x106342ec570e207afda9fda63125d7a9071127f2");
+const COMPANY = process.env.STUB_COMPANY || "8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx";
+const SOL = process.env.STUB_CHAIN !== "evm"; // v2: Solana
+const addrOf = (a) => { if (SOL) { if (bs58.decode(String(a)).length !== 32) throw fail("BAD_INPUT", "Bad address"); return String(a); } return ethers.getAddress(a); };
+const TOKENS = [{ symbol: "USDC", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 }, { symbol: "USDT", mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 }];
 const USDT = process.env.STUB_USDT || "0x55d398326f99059fF775485246999027B3197955";
 const CHAIN_ID = Number(process.env.STUB_CHAIN_ID || 56);
 const CONF = Number(process.env.STUB_CONFIRMATIONS || 3);
@@ -30,7 +38,7 @@ const deposits = new Map(); // key -> { address, txHash, amount, status, confirm
 const withdrawals = []; const trades = []; const nonces = new Map(); const sessions = new Map();
 const vault = { value: 250_000, shares: 250_000 };
 let wid = 1, tid = 1, protocolFees = 0;
-const user = (a) => { a = ethers.getAddress(a); if (!users.has(a)) users.set(a, { available: 0, vaultShares: 0, pendingShares: 0, unlockAt: 0 }); return users.get(a); };
+const user = (a) => { a = addrOf(a); if (!users.has(a)) users.set(a, { available: 0, vaultShares: 0, pendingShares: 0, unlockAt: 0 }); return users.get(a); };
 const mark = (m) => m.index * (1 + m.skew / m.skewScale);
 const fill = (m, size, open = true) => { const base = open ? (size > 0 ? Math.max(m.index, m.target) : Math.min(m.index, m.target)) : m.index; return base * (1 + (m.skew + size / 2) / m.skewScale); };
 const funding = (m) => Math.max(-0.001, Math.min(0.001, (m.skew / m.skewScale) * 0.001 * 10));
@@ -63,7 +71,7 @@ const pubTrade = ({ trader, ...t }) => t;
 
 // ---- routes ----
 const routes = {
-  "GET /config": () => ({ chainId: CHAIN_ID, companyAddress: COMPANY, usdt: { address: USDT, decimals: 18 }, confirmations: CONF, minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }),
+  "GET /config": () => SOL ? ({ chain: "solana", cluster: "mainnet-beta", companyAddress: COMPANY, tokens: TOKENS.map((t) => ({ ...t, companyTokenAccount: ata(COMPANY, t.mint) })), withdrawTokens: ["USDC", "USDT"], commitment: "finalized", minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }) : ({ chainId: CHAIN_ID, companyAddress: COMPANY, usdt: { address: USDT, decimals: 18 }, confirmations: CONF, minDeposit: "10", minWithdraw: "10", fees: { tradingBps: 5, maintenanceBps: 50, liquidationFeeBps: 20, maxLeverage: MAXLEV }, markets: MARKETS.map(({ id, symbol, name }) => ({ id, symbol, name })) }),
   "GET /markets": () => MARKETS.map(marketView),
   "GET /markets/:id/history": ({ params }) => ({ prints: hist[params.id] || [], snapshots: [] }),
   "GET /markets/:id/trades": ({ params, q }) => trades.filter((t) => t.marketId === Number(params.id)).slice(0, Number(q.limit || 50)).map(pubTrade),
@@ -72,14 +80,16 @@ const routes = {
   "GET /stats": () => ({ tvl: s(vault.value + [...users.values()].reduce((t, u) => t + u.available, 0)), volume24h: s(MARKETS.reduce((t, m) => t + m.vol24, 0)), openInterest: s(MARKETS.reduce((t, m) => t + (m.longOI + m.shortOI) * m.index, 0)), traders: users.size }),
   "GET /health": () => ({ ok: true, lastBlock: lastBlock, chainId: CHAIN_ID }),
   "POST /auth/nonce": ({ body }) => {
-    const a = ethers.getAddress(body.address), nonce = crypto.randomBytes(8).toString("hex");
+    const a = addrOf(body.address), nonce = crypto.randomBytes(8).toString("hex");
+    if (SOL) { const message = `localhost wants you to sign in with your Solana account:\n${a}\n\nSign in to Stoxhome.\n\nURI: http://localhost\nVersion: 1\nChain ID: mainnet\nNonce: ${nonce}\nIssued At: ${new Date().toISOString()}`; nonces.set(a, message); return { message }; }
     const message = `stoxhome.local wants you to sign in with your Ethereum account:\n${a}\n\nSign in to Stoxhome.\n\nURI: http://localhost\nVersion: 1\nChain ID: 56\nNonce: ${nonce}\nIssued At: ${new Date().toISOString()}`;
     nonces.set(a, message); return { message };
   },
   "POST /auth/verify": ({ body }) => {
-    const a = ethers.getAddress(body.address);
+    const a = addrOf(body.address);
     if (nonces.get(a) !== body.message) throw fail("UNAUTHORIZED", "Unknown or expired nonce", 401);
-    if (ethers.verifyMessage(body.message, body.signature) !== a) throw fail("UNAUTHORIZED", "Bad signature", 401);
+    const good = SOL ? nacl.sign.detached.verify(new TextEncoder().encode(body.message), bs58.decode(body.signature), bs58.decode(a)) : ethers.verifyMessage(body.message, body.signature) === a;
+    if (!good) throw fail("UNAUTHORIZED", "Bad signature", 401);
     nonces.delete(a); const token = crypto.randomBytes(24).toString("hex"), expiresAt = now() + 7 * DAY;
     sessions.set(token, { address: a, expiresAt }); user(a);
     return { token, expiresAt, isAdmin: a === COMPANY };

@@ -4,14 +4,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ethers } from "ethers";
 import { META } from "./meta.js";
-import { useWallet, walletError } from "./wallet.js";
+import { useSolanaWallet as useWallet, walletError } from "./solanaWallet.js";
+import bs58 from "bs58";
 
 export const ENGINE = (import.meta.env.VITE_ENGINE_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 const SLIP = 0.005;
 const ERC20 = ["function balanceOf(address) view returns (uint256)", "function transfer(address to, uint256 amount) returns (bool)"];
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const n = (x) => (x == null || x === "" ? 0 : Number(x));
-export const explorerFor = (chainId) => ({ 56: "https://bscscan.com", 97: "https://testnet.bscscan.com" })[chainId] || null;
+export const explorerFor = () => "https://solscan.io";
 
 // decimal-string math via 18-dec bigints (no float rounding on amounts we send)
 const D = 18;
@@ -53,7 +54,7 @@ async function call(path, { method = "GET", body, token } = {}) {
 const soft = (p) => p.then((v) => v, () => null);
 
 // ---- token storage (per address) ----
-const tkKey = (a) => "housedex.token." + a.toLowerCase();
+const tkKey = (a) => "stoxhome.token." + a; // base58 is case-sensitive
 const tokens = {
   get(a) { try { const t = JSON.parse(localStorage.getItem(tkKey(a)) || "null"); return t && t.expiresAt * 1000 > Date.now() + 60_000 ? t : null; } catch { return null; } },
   set(a, t) { try { localStorage.setItem(tkKey(a), JSON.stringify(t)); } catch { /* storage blocked */ } },
@@ -147,8 +148,8 @@ export function useEngineExchange() {
     setSigning(true);
     try {
       const { message } = await call("/auth/nonce", { method: "POST", body: { address: account } });
-      const hex = ethers.hexlify(ethers.toUtf8Bytes(message));
-      const signature = await wcRaw.entry.provider.request({ method: "personal_sign", params: [hex, account] });
+      const sigBytes = await wcRaw.entry.signMessage(new TextEncoder().encode(message));
+      const signature = bs58.encode(sigBytes);
       const t = await call("/auth/verify", { method: "POST", body: { address: account, message, signature } });
       tokens.set(account, t);
       setSession({ ...t, address: account });
@@ -226,7 +227,7 @@ export function useEngineExchange() {
     }),
     cancelWithdraw: act("cancelWithdraw", () => "Cancel vault withdrawal", () => post("/vault/cancel-withdraw")),
     withdraw: act("withdraw", () => "Withdraw from vault", () => post("/vault/withdraw")),
-    requestPayout: act("payout", ({ amount }) => `Withdrawal request for ${amount} USDT`, ({ amount }) => post("/withdrawals", { amount: str(big(amount)) })),
+    requestPayout: act("payout", ({ amount, token = "USDC" }) => `Withdrawal request for ${amount} ${token}`, ({ amount, token = "USDC" }) => post("/withdrawals", { amount: str(big(amount)), token })),
     cancelPayout: act("cancelPayout", () => "Cancel withdrawal", ({ id }) => post(`/withdrawals/${id}/cancel`)),
     depositOnChain: async ({ amount }) => {
       // USDT.transfer(company, amount) from the connected wallet, on the engine's chain
