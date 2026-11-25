@@ -276,25 +276,75 @@ function payoutTx(h, { to, amt, mint = USDC, sym = 'USDC', toAta = key(), extra 
   });
 }
 
-test('POC: user cancels after the admin has paid (before finality) -> paid on chain AND refunded in the ledger (double withdrawal)', async () => {
+test('FIXED (H1): user cancels an UNLOCKED withdrawal, then a payout lands -> recovery hold claws it back; no double withdrawal', async () => {
   const h = setup();
   const user = key();
   h.fund(user, U(100));
   const w = h.engine.requestWithdrawal(user, U(100), U(10), 'USDC');
-  // admin presses Pay: transferChecked is broadcast; before it finalizes the user cancels
+  // admin presses Pay without locking; before it finalizes the user cancels (allowed: unlocked)
   const sig = fakeSig();
   const tx = payoutTx(h, { to: user, amt: U(100) });
   h.engine.cancelWithdrawal(user, w.id);
   assert.equal(h.avail(user), U(100));
-  // tx finalizes; watcher sees it, finds no pending withdrawal -> 'unmatched'; admin /paid fails NOT_PENDING
+  // tx finalizes; watcher finds no pending withdrawal -> unmatched -> backstop moves 100 into a recovery hold
   h.rpc.push(h.ata.USDC, sig, tx);
   h.rpc.txs.set(sig, tx);
   await h.ad.poll();
   assert.equal(h.db.prepare('SELECT status FROM sol_outgoing WHERE signature = ?').get(sig).status, 'unmatched');
-  await expectCode(() => h.ad.markPaid(w.id, { signature: sig }), 'NOT_PENDING');
-  // user withdraws the same 100 again
-  const w2 = h.engine.requestWithdrawal(user, U(100), U(10), 'USDC');
-  assert.equal(w2.status, 'pending'); // 200 leaves the company for a 100 balance
+  assert.equal(h.avail(user), 0n);
+  assert.equal(h.engine.balance(acct.locked(user)), U(100));
+  const alerts = h.engine.alerts();
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].held, '100');
+  assert.equal(alerts[0].shortfall, '0');
+  // the same 100 cannot be withdrawn again
+  await expectCode(() => h.engine.requestWithdrawal(user, U(100), U(10), 'USDC'), 'INSUFFICIENT_BALANCE');
+  // admin settles the hold as paid on chain: ledger matches reality
+  h.engine.resolveAlert(alerts[0].id, 'paid');
+  assert.equal(h.engine.balance(acct.withdrawals), U(100));
+  assert.equal(h.engine.balance(acct.locked(user)), 0n);
+  assert.ok(h.engine.checkLedger().ok);
+});
+
+test('FIXED (H1): recovery hold never goes below zero and records the shortfall', async () => {
+  const h = setup();
+  const user = key();
+  h.fund(user, U(100));
+  const w = h.engine.requestWithdrawal(user, U(100), U(10), 'USDC');
+  h.engine.cancelWithdrawal(user, w.id);
+  h.engine.vaultDeposit(user, U(70)); // user moves 70 away before the payout lands
+  const sig = fakeSig();
+  h.rpc.push(h.ata.USDC, sig, payoutTx(h, { to: user, amt: U(100) }));
+  await h.ad.poll();
+  const [a] = h.engine.alerts();
+  assert.equal(a.held, '30');
+  assert.equal(a.shortfall, '70');
+  assert.equal(h.avail(user), 0n);
+  assert.ok(h.engine.checkLedger().ok);
+});
+
+test('FIXED (H1): reject of a LOCKED withdrawal is refused (PAYOUT_MAY_LAND) until blockhash expiry AND a scan past it', async () => {
+  const h = setup();
+  const user = key();
+  h.fund(user, U(100));
+  let height = 500;
+  h.rpc.getBlockHeight = async () => height;
+  const w = h.engine.requestWithdrawal(user, U(100), U(10), 'USDC');
+  h.engine.lockWithdrawal(w.id, { blockhash: key(), lastValidBlockHeight: 650 });
+  await expectCode(() => h.engine.cancelWithdrawal(user, w.id), 'WITHDRAW_LOCKED');
+  await expectCode(() => h.engine.rejectWithdrawal(w.id, 'x'), 'PAYOUT_MAY_LAND'); // engine refuses without proof
+  const row = () => h.engine.s.wd.get(w.id);
+  await expectCode(() => h.ad.verifyUnlock(row()), 'PAYOUT_MAY_LAND'); // chain not past 650
+  height = 651;
+  await expectCode(() => h.ad.verifyUnlock(row()), 'PAYOUT_MAY_LAND'); // watcher has not scanned past 650
+  await h.ad.poll();
+  assert.equal(await h.ad.verifyUnlock(row()), true);
+  h.engine.rejectWithdrawal(w.id, 'expired', { unlockVerified: true });
+  assert.equal(h.avail(user), U(100));
+  // a lock without blockhash info can never be proven safe
+  const w2 = h.engine.requestWithdrawal(user, U(50), U(10), 'USDC');
+  h.engine.lockWithdrawal(w2.id);
+  await expectCode(() => h.ad.verifyUnlock(h.engine.s.wd.get(w2.id)), 'PAYOUT_MAY_LAND');
 });
 
 test('DEFENCE: /paid rejects wrong mint, wrong owner, underpayment, failed tx, unrelated tx, and reuse for a second withdrawal', async () => {
@@ -433,7 +483,11 @@ test('DEFENCE: SIWS nonce is single-use, bound to address+exact message+domain, 
 
 test('DEFENCE: isAdmin only for the exact base58 company key; forged/edited session tokens are rejected', () => {
   const { auth } = mkAuth();
-  const tok = auth.sign({ a: key(), e: 2e9 });
+  const tok = auth.sign({ a: key(), c: 'solana', e: 2e9 });
+  // I1: tokens without the chain claim, for another chain, or with a non-base58 address are refused (same secret)
+  assert.equal(auth.check(auth.sign({ a: key(), e: 2e9 })), null);
+  assert.equal(auth.check(auth.sign({ a: key(), c: 'evm', e: 2e9 })), null);
+  assert.equal(auth.check(auth.sign({ a: '0x106342ec570e207afda9fda63125d7a9071127f2', c: 'solana', e: 2e9 })), null);
   assert.equal(auth.check(tok).isAdmin, false);
   const [body, mac] = tok.split('.');
   const forged = Buffer.from(JSON.stringify({ a: COMPANY, e: 2e9 })).toString('base64url') + '.' + mac;
@@ -441,7 +495,8 @@ test('DEFENCE: isAdmin only for the exact base58 company key; forged/edited sess
   assert.equal(auth.check(body + '.' + mac.slice(0, -2)), null);
   let lc = null; try { lc = auth.normAddress(COMPANY.toLowerCase()); } catch { /* invalid is fine */ }
   assert.notEqual(lc, COMPANY); // base58 is case-sensitive: no case-folding onto the admin key
-  assert.equal(auth.check(auth.sign({ a: COMPANY.toLowerCase(), e: 2e9 })).isAdmin, false);
+  assert.equal(auth.check(auth.sign({ a: COMPANY.toLowerCase(), c: 'solana', e: 2e9 })).isAdmin, false); // a different key
+  assert.equal(auth.check(auth.sign({ a: COMPANY, c: 'solana', e: 2e9 })).isAdmin, true);
 });
 
 test('DEFENCE (was POC L2): SIWS sign-in as the small-order identity-point address without a private key is rejected', () => {

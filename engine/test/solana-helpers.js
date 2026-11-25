@@ -92,6 +92,14 @@ export class MockSolanaRpc {
         if (b === undefined) return { context: { slot: this.slot }, value: null };
         return { context: { slot: this.slot }, value: { data: { parsed: { info: { mint: this.mintOf?.get(params[0]), tokenAmount: { amount: String(b), decimals: 6 } }, type: 'account' }, program: 'spl-token' } } };
       }
+      case 'sendTransaction': {
+        const buf = Buffer.from(params[0], 'base64');
+        if (params[1]?.encoding !== 'base64') throw { code: -32602, message: 'expected base64' };
+        if (this.rejectSend) throw { code: -32002, message: 'Transaction simulation failed: insufficient funds' };
+        this.sent = (this.sent || []).concat([params[0]]);
+        return bs58.encode(buf.subarray(1, 65));
+      }
+      case 'getBlockHeight': return this.blockHeight ?? this.slot;
       case 'getBalance': return { context: { slot: this.slot }, value: Number(this.lamports.get(params[0]) || 0) };
       case 'getLatestBlockhash': return { context: { slot: this.slot }, value: { blockhash: randomKey(), lastValidBlockHeight: this.slot + 150 } };
       case 'getTokenAccountsByOwner': throw { code: -32601, message: 'Method blocked' };

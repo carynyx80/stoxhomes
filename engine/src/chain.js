@@ -269,7 +269,7 @@ export class Watcher {
   async verifyUnlock(w) {
     if (!w.processing_at) return true;
     if (this.engine.now() - Number(w.processing_at) < 3600) throw new AppError('PAYOUT_MAY_LAND', 'Locked for payment less than 1h ago; the payout could still land');
-    const seen = this.db.prepare('SELECT 1 FROM outgoing WHERE to_addr = ? AND at >= ?').get(w.address, w.processing_at);
+    const seen = this.db.prepare("SELECT 1 FROM outgoing WHERE to_addr = ? AND status = 'unmatched' AND at >= ?").get(w.address, w.processing_at);
     if (seen) throw new AppError('PAYOUT_MAY_LAND', 'A payout to this user was seen after the lock; mark it paid instead');
     return true;
   }

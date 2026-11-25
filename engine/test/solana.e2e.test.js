@@ -117,10 +117,15 @@ test('solana e2e', async () => {
 
   // unattributed: multi-sender and failed transactions
   const multiSig = deposit(bob, 'USDC', 700, { companyPre: 5999 * C, moves: [{ owner: alice.address, mint: MINTS.USDC, pre: 10 * C, post: 0, account: randomKey() }] });
-  const failSig = deposit(bob, 'USDC', 300, { tx: { err: { InstructionError: [0, { Custom: 1 }] } } });
+  // failed txs are skipped without getTransaction (L3); a mint-like credit with no sender is unattributed
+  const txCalls = mock.calls.getTransaction || 0;
+  const failedSkipped = deposit(bob, 'USDC', 300, { tx: { err: { InstructionError: [0, { Custom: 1 }] } } });
+  const failSig = mock.publish(craftTx({ moves: [{ owner: company, mint: MINTS.USDC, pre: 6699 * C, post: 6999 * C }] }), [ATA.USDC]);
   await svc.watcher.poll();
+  assert.equal(mock.calls.getTransaction - txCalls, 2, 'failed signature not fetched');
   const un = await ok('GET', '/admin/deposits', null, adm.token);
-  assert.deepEqual(un.map((d) => [d.signature, d.reason]).sort(), [[multiSig, 'multiple_senders'], [failSig, 'failed']].sort());
+  assert.deepEqual(un.map((d) => [d.signature, d.reason]).sort(), [[multiSig, 'multiple_senders'], [failSig, 'unknown_sender']].sort());
+  assert.ok(!un.some((d) => d.signature === failedSkipped));
   assert.equal((await api('GET', '/admin/deposits', null, a.token)).status, 403);
   assert.equal((await ok('GET', '/me', null, bb.token)).balance.available, '0', 'never auto-credited');
   // admin manual credit, then refund note
@@ -129,7 +134,7 @@ test('solana e2e', async () => {
   assert.equal((await ok('GET', '/me', null, bb.token)).balance.available, '700');
   assert.equal((await api('POST', `/admin/deposits/${multiSig}/credit`, { address: bob.address }, adm.token)).body.error, 'NOT_PENDING');
   assert.equal((await api('POST', `/admin/deposits/${failSig}/credit`, { address: '0xdeadbeef' }, adm.token)).body.error, 'BAD_INPUT');
-  assert.equal((await ok('POST', `/admin/deposits/${failSig}/refund-note`, { note: 'failed tx, nothing received' }, adm.token)).status, 'refund_noted');
+  assert.equal((await ok('POST', `/admin/deposits/${failSig}/refund-note`, { note: 'unknown sender' }, adm.token)).status, 'refund_noted');
   assert.equal((await ok('GET', '/admin/deposits', null, adm.token)).length, 0);
   check();
 
@@ -174,10 +179,19 @@ test('solana e2e', async () => {
   ws = await ok('GET', '/me/withdrawals', null, a.token);
   assert.equal(ws.find((x) => x.id === w3.id).status, 'pending');
   await ok('POST', `/withdrawals/${w3.id}/cancel`, null, a.token);
-  // admin lock (before signing the payout) blocks a user cancel
+  // admin lock (with the payout tx's blockhash) blocks a user cancel and an early reject
   const w5 = await ok('POST', '/withdrawals', { amount: '30' }, a.token);
-  assert.equal((await ok('POST', `/admin/withdrawals/${w5.id}/lock`, null, adm.token)).processing, true);
+  assert.equal((await api('POST', `/admin/withdrawals/${w5.id}/lock`, {}, adm.token)).body.error, 'BAD_INPUT');
+  const bh = await ok('GET', '/chain/blockhash');
+  const locked = await ok('POST', `/admin/withdrawals/${w5.id}/lock`, bh, adm.token);
+  assert.equal(locked.processing, true);
+  assert.equal(locked.lock.lastValidBlockHeight, bh.lastValidBlockHeight);
   assert.equal((await api('POST', `/withdrawals/${w5.id}/cancel`, null, a.token)).body.error, 'WITHDRAW_LOCKED');
+  mock.blockHeight = bh.lastValidBlockHeight - 10;
+  assert.equal((await api('POST', `/admin/withdrawals/${w5.id}/reject`, { reason: 'test' }, adm.token)).body.error, 'PAYOUT_MAY_LAND');
+  mock.blockHeight = bh.lastValidBlockHeight + 1; // chain past expiry, but the watcher has not scanned past it yet
+  assert.equal((await api('POST', `/admin/withdrawals/${w5.id}/reject`, { reason: 'test' }, adm.token)).body.error, 'PAYOUT_MAY_LAND');
+  await svc.watcher.poll(); // full scan at height > lastValidBlockHeight, no payout seen
   await ok('POST', `/admin/withdrawals/${w5.id}/reject`, { reason: 'test' }, adm.token);
   // reject returns the funds
   const before = (await ok('GET', '/me', null, a.token)).balance.available;
@@ -198,6 +212,7 @@ test('solana e2e', async () => {
   assert.equal(ov.surplus, '93450');
   assert.equal(ov.ledgerOk, true);
   assert.deepEqual(ov.unattributedDeposits, []);
+  assert.deepEqual(ov.alerts, []);
   assert.ok(Array.isArray(ov.unmatchedPayouts));
   console.log(`# solana overview: ${JSON.stringify(ov)}`);
   const health = await ok('GET', '/health');

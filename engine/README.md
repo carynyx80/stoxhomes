@@ -43,6 +43,24 @@ accounts are keyed by base58 address on Solana and lowercase hex on EVM.
   the signature is base58 of the 64-byte ed25519 `signMessage` output, verified strictly (RFC 8032, small-order
   keys rejected). Addresses are validated as canonical base58 of 32 bytes everywhere.
 - `GET /chain/blockhash` proxies `getLatestBlockhash` (finalized) with a 5 s cache.
+- `GET /chain/balances?owner=` → `{ sol, tokens: { USDC, USDT } }` (getBalance + getAccountInfo jsonParsed of the
+  derived ATAs, missing = "0"), cached 5 s per owner, 60 req/min per IP.
+- `POST /chain/send { tx }` relays a signed deposit transaction (base64, ≤ 1232 bytes, legacy or v0 without lookup
+  tables). Only ComputeBudget SetComputeUnitLimit/Price, ATA create/createIdempotent of a company ATA, and SPL
+  `transferChecked` into the company ATA of that mint (6 decimals, non-zero) are allowed, and the fee payer's ed25519
+  signature must verify; anything else is `TX_NOT_ALLOWED`. `sendTransaction` runs with preflight;
+  RPC rejections return `TX_REJECTED`. 10 req/min per IP. `/config.features` lists both endpoints.
+- **Withdrawal locks (H1):** `POST /admin/withdrawals/:id/lock { blockhash, lastValidBlockHeight }` with the payout
+  tx's blockhash. A locked withdrawal cannot be cancelled by the user (`WITHDRAW_LOCKED`) and cannot be rejected
+  (`PAYOUT_MAY_LAND`) until the finalized block height is past `lastValidBlockHeight` **and** the watcher has fully
+  scanned to a height past it with no unmatched payout to that user/token. Backstop: an unmatched payout that equals
+  a withdrawal of that user/token cancelled or rejected in the last 72 h moves that amount from `available` into a
+  `withdraw_locked` recovery hold (never below zero; any shortfall is recorded) and raises an alert, listed in
+  `/admin/overview.alerts` and `GET /admin/alerts`; resolve with `POST /admin/alerts/:id/resolve { action: "paid"|"release" }`.
+- Sessions carry a chain claim (`c`), and the address must be canonical for the chain: EVM-era tokens are refused
+  even with the same `SESSION_SECRET`.
+- Signatures reported failed by `getSignaturesForAddress` are skipped without `getTransaction`; hitting
+  `MAX_TX_PER_POLL` logs a warning and the backlog continues next poll.
 - `GET /admin/overview`: `companyOnChain` (USDC + USDT ATA balances, missing account = 0), `companyTokens`,
   `companySol`, liabilities, `surplus`, pending withdrawals, `unattributedDeposits`, `unmatchedPayouts`.
 
@@ -202,5 +220,7 @@ Vault shares are shown with 12 decimals (1 share ≈ 1 USDT at the start). `fund
 - Vault withdrawal requests do not expire (the contract's 3-day execution window was not ported).
 - Solana: only finalized transactions are read, so `/me/deposits` shows a deposit once it is finalized
   (the `confirming` state is not used). Withdrawal auto-matching is by recipient owner + exact amount + token.
-- Solana: a user can still cancel a pending withdrawal unless the admin page calls `/admin/withdrawals/:id/lock`
-  before signing the payout; a payout that lands after a cancel shows up in `unmatchedPayouts` for manual recovery.
+- Solana: the admin page must call `/admin/withdrawals/:id/lock` (with the payout blockhash) before signing; an
+  unlocked withdrawal can still be cancelled, in which case a late payout is caught by the recovery-hold backstop.
+- `/chain/send` rejects wallet-injected extra instructions (e.g. Lighthouse assertions); such wallets should send
+  the transaction themselves (the watcher credits it either way).

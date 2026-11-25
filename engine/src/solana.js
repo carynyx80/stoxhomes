@@ -161,6 +161,26 @@ export class SolRpc {
     return BigInt(r.value);
   }
 
+  /** Balance of a token account via getAccountInfo(jsonParsed); missing account = 0. */
+  async getTokenAccountInfoBalance(account, mint) {
+    const r = await this.call('getAccountInfo', [account, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+    if (!r || !r.value) return 0n;
+    const info = r.value.data?.parsed?.info;
+    if (!info || (mint && info.mint !== mint)) return 0n;
+    return BigInt(info.tokenAmount.amount);
+  }
+
+  sendTransaction(b64) {
+    return this.callOnce('sendTransaction', [b64, { encoding: 'base64', skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 }]);
+  }
+
+  /** Single attempt per endpoint, no retry rounds (used for non-idempotent-looking calls). */
+  async callOnce(method, params) {
+    const saved = this.retries;
+    this.retries = 0;
+    try { return await this.call(method, params); } finally { this.retries = saved; }
+  }
+
   async getBlockHeight() {
     return Number(await this.call('getBlockHeight', [{ commitment: 'finalized' }]));
   }
@@ -265,6 +285,34 @@ export class SolanaAdapter {
     this.lastError = null;
     this.running = false;
     this._bh = null;
+    this._balCache = new Map();
+    this.balLimiter = new SimpleLimiter(config.balancesPerMin || 60);
+    this.sendLimiter = new SimpleLimiter(config.sendPerMin || 10);
+  }
+
+  async chainBalances(owner) {
+    normSolAddress(owner, 'owner');
+    const hit = this._balCache.get(owner);
+    if (hit && Date.now() - hit.at < (this.cfg.balancesCacheMs ?? 5000)) return hit.value;
+    const [lamports, ...toks] = await Promise.all([
+      this.rpc.getBalance(owner),
+      ...this.tokens.map((t) => this.rpc.getTokenAccountInfoBalance(deriveAta(owner, t.mint), t.mint)),
+    ]);
+    const value = { sol: formatUnits(lamports, 9), tokens: Object.fromEntries(this.tokens.map((t, i) => [t.symbol, formatUnits(toks[i], t.decimals)])) };
+    this._balCache.set(owner, { at: Date.now(), value });
+    if (this._balCache.size > 5000) this._balCache.clear();
+    return value;
+  }
+
+  async relay(b64) {
+    const v = validateRelayTx(b64, { company: this.company, tokens: this.tokens });
+    let sig;
+    try { sig = await this.rpc.sendTransaction(b64); } catch (e) {
+      if (e.rpc) throw new AppError('TX_REJECTED', `RPC rejected the transaction: ${String(e.rpc.message || '').slice(0, 300)}`);
+      throw e;
+    }
+    if (sig !== v.signature) this.log(`sendTransaction returned ${sig}, expected ${v.signature}`);
+    return { signature: v.signature };
   }
 
   meta(key) { const r = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key); return r ? r.value : null; }
@@ -278,6 +326,7 @@ export class SolanaAdapter {
 
   configView() {
     return {
+      features: ['chain/balances', 'chain/send'],
       chain: 'solana', cluster: this.cfg.cluster, companyAddress: this.company,
       tokens: this.tokens.map((t) => ({ symbol: t.symbol, mint: t.mint, decimals: t.decimals, companyTokenAccount: t.ata })),
       withdrawTokens: this.tokens.map((t) => t.symbol), commitment: 'finalized',
@@ -395,7 +444,8 @@ export class SolanaAdapter {
     if (height <= lvbh || scanned <= lvbh) {
       throw new AppError('PAYOUT_MAY_LAND', `Payout blockhash valid until block height ${lvbh}; chain is at ${height}, watcher scanned to ${scanned}. Try again once both are past ${lvbh}.`);
     }
-    const landed = this.db.prepare('SELECT 1 FROM sol_outgoing WHERE recipient = ? AND mint = ? AND at >= ?').get(w.address, t.mint, w.processing_at);
+    // An unmatched payout to this user/token since the lock may be this withdrawal's payout (matched ones belong to others).
+    const landed = this.db.prepare("SELECT 1 FROM sol_outgoing WHERE recipient = ? AND mint = ? AND status = 'unmatched' AND at >= ?").get(w.address, t.mint, w.processing_at);
     if (landed) throw new AppError('PAYOUT_MAY_LAND', 'A payout to this user in this token was seen after the lock; mark it paid instead');
     return true;
   }
@@ -565,6 +615,14 @@ export class SolanaAdapter {
 
   extraRoutes(app, { admin, h, body }) {
     app.get('/chain/blockhash', h(() => this.blockhash()));
+    app.get('/chain/balances', h((req) => {
+      if (!this.balLimiter.hit(req.ip || 'unknown')) throw new AppError('RATE_LIMITED', 'Too many requests', 429);
+      return this.chainBalances(String(req.query.owner ?? ''));
+    }));
+    app.post('/chain/send', h((req) => {
+      if (!this.sendLimiter.hit(req.ip || 'unknown')) throw new AppError('RATE_LIMITED', 'Too many requests', 429);
+      return this.relay(body(req).tx);
+    }));
     app.get('/admin/deposits', admin, h((req) => {
       const status = String(req.query.status || 'unattributed');
       if (!['unattributed', 'below_minimum', 'credited', 'refund_noted', 'all'].includes(status)) throw new AppError('BAD_INPUT', 'bad status');
@@ -592,4 +650,138 @@ export class SolanaAdapter {
   }
 
   stop() { this.running = false; clearTimeout(this.timer); }
+}
+
+// ------------------------------------------------------- tx relay (POST /chain/send)
+
+export const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
+export const MAX_TX_BYTES = 1232;
+
+function readShortVec(buf, o) {
+  let len = 0;
+  let size = 0;
+  for (;;) {
+    if (o.i >= buf.length) throw new Error('truncated');
+    const b = buf[o.i++];
+    len |= (b & 0x7f) << (size * 7);
+    size++;
+    if ((b & 0x80) === 0) break;
+    if (size > 3) throw new Error('bad shortvec');
+  }
+  return len;
+}
+
+function take(buf, o, n) {
+  if (o.i + n > buf.length) throw new Error('truncated');
+  const out = buf.subarray(o.i, o.i + n);
+  o.i += n;
+  return out;
+}
+
+/** Deserialize a signed wire transaction (legacy or v0). */
+export function deserializeTx(buf) {
+  const o = { i: 0 };
+  const nSig = readShortVec(buf, o);
+  const signatures = [];
+  for (let k = 0; k < nSig; k++) signatures.push(take(buf, o, 64));
+  const msgStart = o.i;
+  let version = 'legacy';
+  if (buf[o.i] & 0x80) {
+    version = buf[o.i] & 0x7f;
+    o.i++;
+    if (version !== 0) throw new Error(`unsupported tx version ${version}`);
+  }
+  const [numRequired, numRoSigned, numRoUnsigned] = take(buf, o, 3);
+  const nKeys = readShortVec(buf, o);
+  const keys = [];
+  for (let k = 0; k < nKeys; k++) keys.push(bs58.encode(take(buf, o, 32)));
+  const recentBlockhash = bs58.encode(take(buf, o, 32));
+  const nIx = readShortVec(buf, o);
+  const instructions = [];
+  for (let k = 0; k < nIx; k++) {
+    const programIdIndex = take(buf, o, 1)[0];
+    const nAcc = readShortVec(buf, o);
+    const accounts = [...take(buf, o, nAcc)];
+    const dLen = readShortVec(buf, o);
+    instructions.push({ programIdIndex, accounts, data: Buffer.from(take(buf, o, dLen)) });
+  }
+  let lookups = [];
+  if (version === 0) {
+    const nL = readShortVec(buf, o);
+    for (let k = 0; k < nL; k++) {
+      const key = bs58.encode(take(buf, o, 32));
+      const w = take(buf, o, readShortVec(buf, o));
+      const r = take(buf, o, readShortVec(buf, o));
+      lookups.push({ key, writable: [...w], readonly: [...r] });
+    }
+  }
+  if (o.i !== buf.length) throw new Error('trailing bytes');
+  return { signatures, message: buf.subarray(msgStart), version, header: { numRequired, numRoSigned, numRoUnsigned }, keys, recentBlockhash, instructions, lookups };
+}
+
+const notAllowed = (msg) => new AppError('TX_NOT_ALLOWED', msg);
+
+/**
+ * Validate a user's signed deposit transaction before relaying it. Only compute-budget, company-ATA
+ * create/createIdempotent and SPL transferChecked into a company ATA are allowed; fee payer must have signed.
+ * Returns { signature (base58), transfers: [{ mint, amount }] }.
+ */
+export function validateRelayTx(b64, { company, tokens }) {
+  if (typeof b64 !== 'string' || b64.length > 2000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) throw new AppError('BAD_INPUT', 'tx must be base64');
+  const buf = Buffer.from(b64, 'base64');
+  if (buf.toString('base64') !== b64) throw new AppError('BAD_INPUT', 'tx must be canonical base64');
+  if (buf.length > MAX_TX_BYTES) throw notAllowed(`transaction larger than ${MAX_TX_BYTES} bytes`);
+  let tx;
+  try { tx = deserializeTx(buf); } catch (e) { throw notAllowed(`cannot deserialize transaction: ${e.message}`); }
+  if (tx.lookups.length) throw notAllowed('address lookup tables are not allowed');
+  if (tx.signatures.length === 0 || tx.signatures.length !== tx.header.numRequired) throw notAllowed('signature count mismatch');
+  const payer = tx.keys[0];
+  if (!payer || !ed25519.verify(tx.signatures[0], tx.message, decodePubkey(payer), { zip215: false })) throw notAllowed('missing or invalid fee payer signature');
+  const ataByMint = new Map(tokens.map((t) => [t.mint, t.ata]));
+  const companyAtas = new Set(ataByMint.values());
+  const key = (ix, k) => {
+    const idx = ix.accounts[k];
+    if (idx === undefined || idx >= tx.keys.length) throw notAllowed('instruction account out of range');
+    return tx.keys[idx];
+  };
+  const transfers = [];
+  for (const ix of tx.instructions) {
+    if (ix.programIdIndex >= tx.keys.length) throw notAllowed('program index out of range');
+    const program = tx.keys[ix.programIdIndex];
+    if (program === COMPUTE_BUDGET_PROGRAM_ID) {
+      if (![2, 3].includes(ix.data[0]) || ix.accounts.length) throw notAllowed('only SetComputeUnitLimit / SetComputeUnitPrice are allowed');
+    } else if (program === ATA_PROGRAM_ID) {
+      if (!(ix.data.length === 0 || (ix.data.length === 1 && (ix.data[0] === 0 || ix.data[0] === 1)))) throw notAllowed('only ATA create / createIdempotent are allowed');
+      const ata = key(ix, 1); const owner = key(ix, 2); const mint = key(ix, 3);
+      if (owner !== company || ataByMint.get(mint) !== ata) throw notAllowed('ATA creation is only allowed for the company token accounts');
+      if (key(ix, 4) !== '11111111111111111111111111111111' || key(ix, 5) !== TOKEN_PROGRAM_ID) throw notAllowed('ATA must use the System and SPL Token programs');
+    } else if (program === TOKEN_PROGRAM_ID) {
+      if (ix.data[0] !== 12 || ix.data.length !== 10) throw notAllowed('only SPL transferChecked is allowed');
+      const mint = key(ix, 1); const dest = key(ix, 2);
+      if (!ataByMint.has(mint)) throw notAllowed('mint is not an accepted collateral');
+      if (dest !== ataByMint.get(mint) || !companyAtas.has(dest)) throw notAllowed('transfer destination is not the company token account');
+      const decimals = ix.data[9];
+      const t = tokens.find((x) => x.mint === mint);
+      if (decimals !== t.decimals) throw notAllowed('decimals mismatch');
+      const amount = ix.data.readBigUInt64LE(1);
+      if (amount === 0n) throw notAllowed('zero amount');
+      transfers.push({ mint, amount });
+    } else {
+      throw notAllowed(`program ${program} is not allowed`);
+    }
+  }
+  if (!transfers.length) throw notAllowed('transaction must contain a transferChecked to the company');
+  return { signature: bs58.encode(tx.signatures[0]), transfers, payer };
+}
+
+export class SimpleLimiter {
+  constructor(limit, windowMs = 60_000) { this.limit = limit; this.windowMs = windowMs; this.map = new Map(); }
+  hit(key) {
+    const now = Date.now();
+    let e = this.map.get(key);
+    if (!e || now - e.start >= this.windowMs) { e = { start: now, count: 0 }; this.map.set(key, e); }
+    e.count++;
+    if (this.map.size > 20_000) for (const [k, v] of this.map) if (now - v.start >= this.windowMs) this.map.delete(k);
+    return e.count <= this.limit;
+  }
 }
