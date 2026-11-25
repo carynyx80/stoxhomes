@@ -114,6 +114,16 @@ test('solana e2e', async () => {
   assert.equal((await ok('GET', '/me', null, a.token)).balance.available, '6000');
   deps = await ok('GET', '/me/deposits', null, a.token);
   assert.equal(deps.find((d) => d.signature === smallSig).status, 'below_minimum');
+  // lowering the minimum credits set-aside deposits from a known sender, exactly once
+  const prevMin = svc.watcher.cfg.minDeposit;
+  svc.watcher.cfg.minDeposit = 1_000_000n; // 1 USD
+  await svc.watcher.poll();
+  await svc.watcher.poll();
+  assert.equal((await ok('GET', '/me', null, a.token)).balance.available, '6005', 'below-minimum deposit credited once after minimum lowered');
+  deps = await ok('GET', '/me/deposits', null, a.token);
+  assert.equal(deps.find((d) => d.signature === smallSig).status, 'credited');
+  svc.watcher.cfg.minDeposit = prevMin;
+  check();
 
   // unattributed: multi-sender and failed transactions
   const multiSig = deposit(bob, 'USDC', 700, { companyPre: 5999 * C, moves: [{ owner: alice.address, mint: MINTS.USDC, pre: 10 * C, post: 0, account: randomKey() }] });
@@ -207,9 +217,9 @@ test('solana e2e', async () => {
   assert.equal(ov.companyTokens.USDT, '0');
   assert.equal(ov.companyOnChain, '200000');
   assert.equal(ov.companySol, '12.3456789');
-  // liabilities = credited 5000 + 1000 + 700 - paid 150 + seed 100000 = 106550
-  assert.equal(ov.liabilities.total, '106550');
-  assert.equal(ov.surplus, '93450');
+  // liabilities = credited 5000 + 1000 + 5 (below-minimum, credited after minimum lowered) + 700 - paid 150 + seed 100000 = 106555
+  assert.equal(ov.liabilities.total, '106555');
+  assert.equal(ov.surplus, '93445');
   assert.equal(ov.ledgerOk, true);
   assert.deepEqual(ov.unattributedDeposits, []);
   assert.deepEqual(ov.alerts, []);

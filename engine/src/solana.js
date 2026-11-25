@@ -361,7 +361,31 @@ export class SolanaAdapter {
     return this._polling;
   }
 
+  /**
+   * Credit deposits that were set aside as below_minimum once they meet the current minimum
+   * (e.g. after MIN_DEPOSIT is lowered). Only deposits with a known, attributed sender qualify;
+   * unattributed ones still need an admin decision. Idempotent: status moves to credited.
+   */
+  recreditBelowMinimum() {
+    const rows = this.db.prepare("SELECT * FROM sol_deposits WHERE status = 'below_minimum' AND sender IS NOT NULL AND (reason IS NULL OR reason = '')").all();
+    let n = 0;
+    for (const d of rows) {
+      if (BigInt(d.amount) < this.cfg.minDeposit) continue;
+      this.engine.tx(() => {
+        const cur = this.db.prepare('SELECT status FROM sol_deposits WHERE id = ?').get(d.id);
+        if (cur.status !== 'below_minimum') return;
+        this.engine.ensureUser(d.sender);
+        this._credit(d.signature, d.mint, d.sender);
+        this.db.prepare("UPDATE sol_deposits SET note = COALESCE(note, 'credited after minimum lowered') WHERE id = ?").run(d.id);
+      });
+      n++;
+      this.log(`solana deposit ${d.signature} ${d.token} ${fmtUsdt(BigInt(d.amount))} credited to ${d.sender} (now meets minimum)`);
+    }
+    return n;
+  }
+
   async _poll() {
+    try { this.recreditBelowMinimum(); } catch (e) { this.log(`recredit below-minimum failed: ${e.message}`); }
     // Finalized block height BEFORE listing signatures: once a mint's scan completes, every finalized tx at or
     // below this height that touched its ATA has been processed.
     let height = null;
