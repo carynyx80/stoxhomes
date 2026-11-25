@@ -4,16 +4,21 @@
   "private": true,
   "type": "module",
   "description": "Stoxhome off-chain custodial perp exchange engine",
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
+    "@noble/curves": "^1.9.6",
     "better-sqlite3": "^11.7.0",
+    "bs58": "^6.0.0",
     "ethers": "^6.13.4",
     "express": "^4.21.2",
+    "tweetnacl": "^1.0.3",
     "ws": "^8.18.0"
   }
 }
