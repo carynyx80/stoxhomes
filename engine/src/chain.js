@@ -97,6 +97,12 @@ export class Watcher {
   }
 
   async poll() {
+    if (this._polling) return this._polling;
+    this._polling = this._poll().finally(() => { this._polling = null; });
+    return this._polling;
+  }
+
+  async _poll() {
     await this.initCursor();
     const head = await this.rpc.blockNumber();
     this.setMeta('head', head);
@@ -118,27 +124,32 @@ export class Watcher {
       chunks++;
     }
     // Peek at the unconfirmed tail so users can see "confirming" deposits.
-    if (head > cursor && head - cursor <= this.cfg.logChunk) {
-      const logs = await this.rpc.getLogs({ address: this.token, fromBlock: hex(cursor + 1), toBlock: hex(head), topics: [TRANSFER_TOPIC, null, padTopic(this.company)] });
-      this.engine.tx(() => { for (const l of logs) this._recordIncoming(l, false); });
+    if (head > cursor) {
+      try {
+        const from = Math.max(cursor + 1, head - this.cfg.logChunk + 1);
+        const [logs] = await this._fetchRange(from, head, true);
+        this.engine.tx(() => { for (const l of logs) this._recordIncoming(l, false); });
+      } catch (e) {
+        this.log(`watcher: unconfirmed peek failed (${e.message})`); // best effort, credit path unaffected
+      }
     }
     this.lastError = null;
     return { head, cursor };
   }
 
-  async _fetchRange(from, to) {
+  async _fetchRange(from, to, incomingOnly = false) {
     const base = { address: this.token, fromBlock: hex(from), toBlock: hex(to) };
     try {
       return await Promise.all([
         this.rpc.getLogs({ ...base, topics: [TRANSFER_TOPIC, null, padTopic(this.company)] }),
-        this.rpc.getLogs({ ...base, topics: [TRANSFER_TOPIC, padTopic(this.company)] }),
+        incomingOnly ? [] : this.rpc.getLogs({ ...base, topics: [TRANSFER_TOPIC, padTopic(this.company)] }),
       ]);
     } catch (e) {
       // Some providers cap the range/results: split and retry.
       if (to > from) {
         const mid = Math.floor((from + to) / 2);
-        const a = await this._fetchRange(from, mid);
-        const b = await this._fetchRange(mid + 1, to);
+        const a = await this._fetchRange(from, mid, incomingOnly);
+        const b = await this._fetchRange(mid + 1, to, incomingOnly);
         return [a[0].concat(b[0]), a[1].concat(b[1])];
       }
       throw e;

@@ -755,7 +755,9 @@ export class Engine extends EventEmitter {
       v.pendingValue = 0n;
       v.unlockAt = 0;
       this._saveVs(v);
-      this.post([[acct.vault, -amount], [acct.available(address), amount]], `vault_withdraw:${address}`);
+      // Company capital returns to company equity; LP money to the LP's available balance.
+      const to = address === this.company ? acct.equity : acct.available(address);
+      this.post([[acct.vault, -amount], [to, amount]], `vault_withdraw:${address}`);
       this._emit('me', address);
       return { amount };
     });

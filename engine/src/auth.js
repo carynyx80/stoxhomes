@@ -77,7 +77,7 @@ export class Auth {
     if (got.length !== expect.length || !crypto.timingSafeEqual(got, expect)) return null;
     let p;
     try { p = JSON.parse(Buffer.from(body, 'base64url').toString()); } catch { return null; }
-    if (!p || typeof p.a !== 'string' || typeof p.e !== 'number' || p.e < this.now()) return null;
+    if (!p || typeof p.a !== 'string' || typeof p.e !== 'number' || p.e <= this.now()) return null;
     return { address: p.a, isAdmin: p.a === this.company };
   }
 }
