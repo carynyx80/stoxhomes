@@ -18,9 +18,39 @@ const MARKETS = [
   { symbol: "LDN", name: "London", index: 290 },
 ];
 
+// Company wallet: becomes owner of the oracle and exchange and receives protocol fees,
+// unless OWNER_ADDRESS / FEE_RECIPIENT override it.
+const COMPANY_ADDRESS = "0x106342ec570e207afda9fda63125d7a9071127f2";
+// Tether USD (BEP-20, 18 decimals) on BNB Smart Chain mainnet.
+const BSC_USDT = "0x55d398326f99059fF775485246999027B3197955";
+
 async function main() {
   const [deployer] = await ethers.getSigners();
-  console.log(`Deploying on ${network.name} from ${deployer.address}`);
+  const chainIdNow = Number((await ethers.provider.getNetwork()).chainId);
+  const isMainnet = chainIdNow === 56;
+  const owner = ethers.getAddress(process.env.OWNER_ADDRESS || COMPANY_ADDRESS);
+  const feeRecipient = ethers.getAddress(process.env.FEE_RECIPIENT || owner);
+  console.log(`Deploying on ${network.name} (chain ${chainIdNow}) from ${deployer.address}`);
+  console.log(`  owner/fee recipient after deploy: ${owner} / ${feeRecipient}`);
+
+  if (isMainnet) {
+    // Real money: refuse unless every production input is explicit.
+    if (process.env.CONFIRM_MAINNET !== "yes") throw new Error("Set CONFIRM_MAINNET=yes to deploy to BSC mainnet");
+    if (!process.env.KEEPER_ADDRESS) throw new Error("KEEPER_ADDRESS (keeper bot wallet) is required on mainnet");
+    if (!process.env.INITIAL_INDEX_FILE) {
+      throw new Error("INITIAL_INDEX_FILE is required on mainnet: real published index values, not the placeholders");
+    }
+    process.env.COLLATERAL_ADDRESS = process.env.COLLATERAL_ADDRESS || BSC_USDT;
+  }
+  if (process.env.INITIAL_INDEX_FILE) {
+    // JSON object {"NYC": 331.2, ...} with the latest published value per market.
+    const values = JSON.parse(fs.readFileSync(path.resolve(process.env.INITIAL_INDEX_FILE), "utf8"));
+    for (const m of MARKETS) {
+      if (!(m.symbol in values)) throw new Error(`INITIAL_INDEX_FILE is missing ${m.symbol}`);
+      m.index = Number(values[m.symbol]);
+    }
+  }
+  const startBlock = await ethers.provider.getBlockNumber();
 
   let usdtAddress = process.env.COLLATERAL_ADDRESS;
   if (!usdtAddress) {
@@ -49,11 +79,9 @@ async function main() {
     console.log(`  market ${m.symbol}-USD @ ${m.index}`);
   }
 
-  // Optional: protocol fee recipient (defaults to deployer, 10% of trading fees) and keeper bot.
-  if (process.env.FEE_RECIPIENT) {
-    await (await exchange.setProtocolFee(process.env.FEE_RECIPIENT, 1_000)).wait();
-    console.log("  protocol fee recipient", process.env.FEE_RECIPIENT);
-  }
+  // Protocol fee (10% of trading fees) goes to the company wallet; optional keeper bot.
+  await (await exchange.setProtocolFee(feeRecipient, 1_000)).wait();
+  console.log("  protocol fee recipient", feeRecipient);
   if (process.env.KEEPER_ADDRESS) {
     await (await oracle.setKeeper(process.env.KEEPER_ADDRESS, true)).wait();
     console.log("  keeper", process.env.KEEPER_ADDRESS);
@@ -68,6 +96,19 @@ async function main() {
     console.log("  seeded pool with 1,000,000 USDT");
   }
 
+  // Hand admin control to the company wallet last (setup above needs the deployer as owner).
+  // The deployer stays an oracle keeper only if it was the keeper bot; otherwise remove it.
+  if (owner.toLowerCase() !== deployer.address.toLowerCase()) {
+    const keeper = (process.env.KEEPER_ADDRESS || "").toLowerCase();
+    if (keeper !== deployer.address.toLowerCase()) {
+      await (await oracle.setKeeper(deployer.address, false)).wait();
+    }
+    await (await oracle.setKeeper(owner, true)).wait();
+    await (await oracle.transferOwnership(owner)).wait();
+    await (await exchange.transferOwnership(owner)).wait();
+    console.log("  ownership transferred to", owner);
+  }
+
   const out = path.join(__dirname, "..", "..", "web", "src", "contracts");
   fs.mkdirSync(out, { recursive: true });
   const chainId = Number((await ethers.provider.getNetwork()).chainId);
@@ -78,6 +119,9 @@ async function main() {
     mockUsdt: !process.env.COLLATERAL_ADDRESS,
     oracle: await oracle.getAddress(),
     exchange: await exchange.getAddress(),
+    owner,
+    feeRecipient,
+    startBlock,
     markets: MARKETS,
   };
   fs.writeFileSync(file, JSON.stringify(existing, null, 2));
