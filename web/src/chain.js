@@ -61,7 +61,7 @@ export async function connectWallet() {
 
 export const fmt = (v, d = 2) =>
   v === undefined || v === null
-    ? "—"
+    ? "-"
     : Number(ethers.formatEther(v)).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 
 export const pct = (wad, d = 4) => (Number(ethers.formatEther(wad)) * 100).toFixed(d) + "%";

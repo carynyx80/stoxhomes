@@ -21,7 +21,7 @@ export default function AdminPage({ ex }) {
   useEffect(() => { load(); const h = setInterval(load, 6000); return () => clearInterval(h); }, [load]);
 
   const run = async (label, fn) => {
-    try { await fn(); ex.notify?.({ kind: "ok", text: label + " — done" }); } catch (e) { ex.notify?.({ kind: "err", text: label + ": " + e.message }); }
+    try { await fn(); ex.notify?.({ kind: "ok", text: label + ": done" }); } catch (e) { ex.notify?.({ kind: "err", text: label + ": " + e.message }); }
     load(); ex.reload();
   };
 
@@ -51,7 +51,7 @@ export default function AdminPage({ ex }) {
         <div className="sec-head"><h3>Treasury</h3><span className="sub">Company wallet {short(ex.config.companyAddress)}</span></div>
         <div className="ov-grid">
           <div className="fact"><span>USDC + USDT on chain</span><b>{usd(onchainTotal)}</b>{(() => { const b = ov?.companyTokens || (typeof onchain === "object" ? onchain : null); return b ? <small className="sub2">USDC {usd(b.USDC)} · USDT {usd(b.USDT)}</small> : null; })()}</div>
-          <div className={"fact " + (sol != null && sol < 0.01 ? "surplus neg" : "")}><span>Company SOL</span><b>{sol == null ? "—" : sol.toFixed(4)}</b>{sol != null && sol < 0.01 && <small className="sub2 dn">Needs SOL for fees</small>}</div>
+          <div className={"fact " + (sol != null && sol < 0.01 ? "surplus neg" : "")}><span>Company SOL</span><b>{sol == null ? "-" : sol.toFixed(4)}</b>{sol != null && sol < 0.01 && <small className="sub2 dn">Needs SOL for fees</small>}</div>
           <div className="fact"><span>Liabilities · users</span><b>{usd(L.users)}</b></div>
           <div className="fact"><span>Liabilities · vault</span><b>{usd(L.vault)}</b></div>
           <div className="fact"><span>Protocol fees</span><b>{usd(L.protocolFees)}</b></div>
@@ -91,7 +91,7 @@ export default function AdminPage({ ex }) {
       </section>
 
       <section className="panel">
-        <div className="sec-head"><h3>Unattributed deposits</h3><span className="count">{unattributed.length}</span><span className="sub">Never auto-credited — verify the sender, then credit</span></div>
+        <div className="sec-head"><h3>Unattributed deposits</h3><span className="count">{unattributed.length}</span><span className="sub">Never credited automatically. Verify the sender, then credit.</span></div>
         {unattributed.length === 0 ? <div className="empty"><b>Nothing to resolve.</b><span>Deposits the engine can't match to a signed-in wallet appear here.</span></div> : (
           <div className="tbl awd">
             <div className="tr th"><span>Seen</span><span>Signature</span><span>Amount</span><span /></div>
@@ -104,7 +104,7 @@ export default function AdminPage({ ex }) {
         <section className="panel">
           <div className="sec-head"><h3>Unmatched payouts</h3><span className="count">{ov.unmatchedPayouts.length}</span><span className="sub">Outgoing transfers not matched to a withdrawal</span></div>
           <div className="tbl awd">{ov.unmatchedPayouts.map((x) => (
-            <div className="tr" key={x.signature}><span>{x.at ? when(x.at) : "—"}</span><span><a href={`https://solscan.io/tx/${x.signature}`} target="_blank" rel="noreferrer"><code>{short(x.signature)}</code></a></span><span><b>{usd(Number(x.amount))} {x.token || ""}</b></span><span>{short(x.to || x.recipient || "")}</span></div>
+            <div className="tr" key={x.signature}><span>{x.at ? when(x.at) : "-"}</span><span><a href={`https://solscan.io/tx/${x.signature}`} target="_blank" rel="noreferrer"><code>{short(x.signature)}</code></a></span><span><b>{usd(Number(x.amount))} {x.token || ""}</b></span><span>{short(x.to || x.recipient || "")}</span></div>
           ))}</div>
         </section>
       )}

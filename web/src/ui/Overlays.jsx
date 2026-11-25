@@ -28,10 +28,10 @@ export function Sheet({ sheet, ex, onClose }) {
       note: "Reducing the full size closes the position. Flipping through zero is not allowed.",
       cta: "Reduce", run: () => ex.actions.reduce({ marketId: pos.marketId, units: val }) },
     addMargin: { title: `Add margin · ${pos?.market}`, unit: ex.engine ? "USD" : "USDT", chips: [100, 500, 1000].map((x) => [usd(x, 0), x]),
-      rows: [["New margin", usd((pos?.margin ?? 0) + v)], ["New leverage", `${pos ? ((pos.size * pos.indexPrice) / (pos.margin + v)).toFixed(1) : "—"}×`]],
+      rows: [["New margin", usd((pos?.margin ?? 0) + v)], ["New leverage", `${pos ? ((pos.size * pos.indexPrice) / (pos.margin + v)).toFixed(1) : "-"}×`]],
       cta: "Add margin", run: () => ex.actions.addMargin({ marketId: pos.marketId, amount: val }) },
     removeMargin: { title: `Remove margin · ${pos?.market}`, unit: "USD", chips: [50, 100, 250].map((x) => [usd(x, 0), x]),
-      rows: [["New margin", usd(Math.max(0, (pos?.margin ?? 0) - v))], ["New leverage", `${pos && pos.margin - v > 0 ? ((pos.size * pos.indexPrice) / (pos.margin - v)).toFixed(1) : "—"}×`]],
+      rows: [["New margin", usd(Math.max(0, (pos?.margin ?? 0) - v))], ["New leverage", `${pos && pos.margin - v > 0 ? ((pos.size * pos.indexPrice) / (pos.margin - v)).toFixed(1) : "-"}×`]],
       note: "Leverage must stay at or below 100× after removing margin.",
       cta: "Remove margin", run: () => ex.actions.removeMargin({ marketId: pos.marketId, amount: val }) },
     deposit: { title: "Deposit to vault", unit: ex.engine ? "USD" : "USDT", chips: [1000, 5000, 10000].map((x) => [usd(x, 0), x]),
@@ -113,7 +113,7 @@ export function WalletPicker({ wc }) {
         )}
         {list && searching && <p className="sheet-note wsearch" style={{ display: "flex", alignItems: "center", gap: 10 }}><i className="spin" /> Looking for Solana wallets…</p>}
         {list && none && !searching && wc.evmOnly && (
-          <div className="warnbox"><b>Stoxhome runs on Solana.</b> Your browser has an Ethereum wallet (like MetaMask), which can't connect here — install or open Phantom, Solflare or Backpack.</div>
+          <div className="warnbox"><b>Stoxhome runs on Solana.</b> Your browser has an Ethereum wallet (like MetaMask), which can't connect here. Install or open Phantom, Solflare or Backpack.</div>
         )}
         {list && none && !searching && !mobile && (
           <>

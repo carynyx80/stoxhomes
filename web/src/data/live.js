@@ -159,12 +159,12 @@ export function useLiveExchange() {
   notifyRef.current = (t) => push(t);
 
   async function send(label, fn) {
-    const id = push({ kind: "pending", text: label + " — confirm in wallet" });
+    const id = push({ kind: "pending", text: label + ": confirm in your wallet" });
     try {
       const tx = await fn();
-      patch(id, { text: label + " — pending", hash: tx.hash });
+      patch(id, { text: label + ": pending", hash: tx.hash });
       await tx.wait();
-      patch(id, { kind: "ok", text: label + " — confirmed" });
+      patch(id, { kind: "ok", text: label + ": confirmed" });
       return true;
     } catch (e) {
       const we = walletError(e);

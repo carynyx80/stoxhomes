@@ -56,7 +56,7 @@ export const ERRORS = {
   TX_NOT_FOUND: "The transaction isn't finalized yet. Try again in a few seconds.",
   TX_MISMATCH: "That transaction doesn't match this withdrawal.",
   BAD_INPUT: "Check the amount and try again.",
-  PAYOUT_MAY_LAND: "A payout may still land — try again in ~2 minutes.",
+  PAYOUT_MAY_LAND: "A payout may still land. Try again in about 2 minutes.",
   MIN_AMOUNT: "That amount is below the minimum.",
   RATE_LIMITED: "Too many requests. Wait a moment and try again.",
 };
@@ -198,7 +198,7 @@ export function useEngineExchange() {
     const id = push({ kind: "pending", text: label(...args) + "…" });
     try {
       const out = await fn(...args);
-      patch(id, { kind: "ok", text: label(...args) + " — done" });
+      patch(id, { kind: "ok", text: label(...args) + ": done" });
       return out ?? true;
     } catch (e) {
       if (e.code === "UNAUTHORIZED") expire();
@@ -256,7 +256,7 @@ export function useEngineExchange() {
     cancelWithdraw: act("cancelWithdraw", () => "Cancel vault withdrawal", () => post("/vault/cancel-withdraw")),
     withdraw: act("withdraw", () => "Withdraw from vault", () => post("/vault/withdraw")),
     requestPayout: act("payout", ({ amount, token = "USDC" }) => `Withdrawal request for ${amount} ${token}`, ({ amount, token = "USDC" }) => post("/withdrawals", { amount: str(big(amount)), token })),
-    cancelPayout: act("cancelPayout", () => "Cancel withdrawal", ({ id }) => post(`/withdrawals/${id}/cancel`).catch((e) => { if (e.code === "WITHDRAW_LOCKED") e.message = "Being paid — can't cancel."; throw e; })),
+    cancelPayout: act("cancelPayout", () => "Cancel withdrawal", ({ id }) => post(`/withdrawals/${id}/cancel`).catch((e) => { if (e.code === "WITHDRAW_LOCKED") e.message = "This withdrawal is being paid and can't be cancelled."; throw e; })),
     depositOnChain: async ({ amount, token = "USDC" }) => {
       // SPL transferChecked(user ATA → company ATA) from the connected wallet
       if (!account || !wcRaw.entry) { wcRaw.openPicker(); return null; }
@@ -268,11 +268,11 @@ export function useEngineExchange() {
         if (units <= 0n) throw new Error("Enter an amount.");
         if (cfg.minDeposit && Number(amount) < Number(cfg.minDeposit)) throw new Error(`Minimum deposit is ${cfg.minDeposit} ${token}.`);
         await preflight(account, token, Number(amount));
-        const id = push({ kind: "pending", text: `Deposit ${amount} ${token} — confirm in wallet` });
+        const id = push({ kind: "pending", text: `Deposit ${amount} ${token}: confirm in your wallet` });
         let sig;
         try { sig = await sendTransfer({ from: account, toOwner: cfg.companyAddress, token: t, units }); }
         catch (e) { dismiss(id); throw e; }
-        patch(id, { kind: "ok", text: "Deposit sent — waiting for finalization", hash: sig });
+        patch(id, { kind: "ok", text: "Deposit sent. Waiting for Solana to finalize it", hash: sig });
         return sig;
       } catch (e) {
         const we = walletError(e);
@@ -313,12 +313,12 @@ export function useEngineExchange() {
         setBusy("pay:" + w.id);
         const t = (cfg.tokens || []).find((x) => x.symbol === (w.token || "USDC"));
         const units = ethers.parseUnits(String(w.amount), t.decimals);
-        const id = push({ kind: "pending", text: `Pay ${w.amount} ${t.symbol} to ${short(w.to)} — confirm in wallet` });
+        const id = push({ kind: "pending", text: `Pay ${w.amount} ${t.symbol} to ${short(w.to)}: confirm in your wallet` });
         let sig;
         // lock (bound to the payout's blockhash) before signing, so the user can't cancel and no double payout can land
         const lock = (bh) => call(`/admin/withdrawals/${w.id}/lock`, { method: "POST", body: bh, token });
         try { sig = await sendTransfer({ from: account, toOwner: w.to, token: t, units, beforeSign: lock }); } catch (e) { dismiss(id); throw e; }
-        patch(id, { text: "Payment sent — reporting to the exchange", hash: sig });
+        patch(id, { text: "Payment sent. Reporting it to the exchange", hash: sig });
         const isPaid = async () => { const l = await call("/admin/withdrawals?status=paid", { token }).catch(() => []); return Array.isArray(l) && l.some((x) => String(x.id) === String(w.id)); };
         let done = await isPaid();
         for (let i = 0; !done && i < 20; i++) {

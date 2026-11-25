@@ -193,7 +193,7 @@ function SlideDesk({ ex, nav }) {
         <div><dt>Total value locked</dt><dd>{compact(ex.stats.tvl)}</dd></div>
         <div><dt>24h volume</dt><dd>{compact(ex.stats.volume24h)}</dd></div>
         <div><dt>Open interest</dt><dd>{compact(ex.stats.oi)}</dd></div>
-        <div><dt>Vault APR</dt><dd>{ex.pool.apr == null ? "—" : (ex.pool.apr * 100).toFixed(1) + "%"}</dd></div>
+        <div><dt>Vault APR</dt><dd>{ex.pool.apr == null ? "-" : (ex.pool.apr * 100).toFixed(1) + "%"}</dd></div>
       </dl>
       <div className="mkt-list">
         {ex.markets.map((c, i) => (
@@ -226,7 +226,7 @@ function SlideDesk({ ex, nav }) {
     { id: "portfolio", label: "Portfolio", render: () => <>
       <SlideHead n="06" sub="Your account" title="Your" em="portfolio." />
       <dl className="stats wide">
-        <div><dt>Available balance</dt><dd>{ex.wallet.connected ? usd(ex.wallet.balance, 2) : "—"}</dd></div>
+        <div><dt>Available balance</dt><dd>{ex.wallet.connected ? usd(ex.wallet.balance, 2) : "-"}</dd></div>
         <div><dt>Position equity</dt><dd>{usd(equity)}</dd></div>
         <div><dt>Unrealised PnL</dt><dd className={upnl >= 0 ? "up" : "dn"}>{(upnl >= 0 ? "+" : "−") + usd(Math.abs(upnl))}</dd></div>
         <div><dt>Open positions</dt><dd>{ex.positions.length}</dd></div>
@@ -339,7 +339,7 @@ function Desk({ ex, admin }) {
           <div><dt>Total value locked</dt><dd><Tween value={ex.stats.tvl} format={compact} /></dd></div>
           <div><dt>24h volume</dt><dd><Tween value={vol} format={compact} /></dd></div>
           <div><dt>Open interest</dt><dd><Tween value={oi} format={compact} /></dd></div>
-          <div><dt>Vault APR</dt><dd>{ex.pool.apr == null ? "—" : <Tween value={ex.pool.apr * 100} format={(v) => v.toFixed(1) + "%"} />}</dd></div>
+          <div><dt>Vault APR</dt><dd>{ex.pool.apr == null ? "-" : <Tween value={ex.pool.apr * 100} format={(v) => v.toFixed(1) + "%"} />}</dd></div>
         </dl>
       </section>
 
@@ -407,7 +407,7 @@ function Desk({ ex, admin }) {
       <footer className="foot">
         {ENGINE_MODE
           ? <span>Stoxhome holds customer deposits in its treasury wallet <a href={`https://solscan.io/account/${TREASURY}`} target="_blank" rel="noreferrer">{TREASURY.slice(0, 4)}…{TREASURY.slice(-4)}</a>. Derivatives on real-estate indices are regulated in most jurisdictions.</span>
-          : <span>Stoxhome — {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>}
+          : <span>Stoxhome on {CHAIN_ID === 56 ? "BNB Smart Chain" : CHAIN_ID === 97 ? "BNB Smart Chain testnet" : "demo network, test funds only"}. Unaudited. Derivatives on real-estate indices are regulated in most jurisdictions.</span>}
         <span>Index = smoothed oracle print · Mark = index × (1 + skew / skewScale)</span>
         {!USE_MOCK && !ENGINE_MODE && deployment?.feeRecipient && (
           <span>Protocol fees: {chain.explorer
@@ -431,8 +431,8 @@ function PrintBanner({ ps }) {
     <div className={"pbanner " + ps.kind}>
       <span className="pb-ico">◷</span>
       {ps.kind === "active"
-        ? <p><b>Close-only{ps.left > 0 ? ` — next index print in ${countdown(ps.left)}` : " — index print pending"}.</b> New positions and increases are paused until the print lands; closing and reducing are always allowed.</p>
-        : <p><b>Close-only in {countdown(ps.left)} — next index print.</b> Opening pauses 6h before each scheduled print so nobody can front-run it.</p>}
+        ? <p><b>Close-only{ps.left > 0 ? `: next index print in ${countdown(ps.left)}` : ": index print pending"}.</b> New positions and increases are paused until the print lands; closing and reducing are always allowed.</p>
+        : <p><b>Close-only in {countdown(ps.left)} for the next index print.</b> Opening pauses 6h before each scheduled print so nobody can front-run it.</p>}
     </div>
   );
 }
@@ -525,7 +525,7 @@ function Ticket({ m, ex, ps, openFunds }) {
           : ex.wc?.wrongChain
             ? <button className="go switch" disabled={ex.wc.pending === "switch"} onClick={() => ex.wc.switchChain()}>{ex.wc.pending === "switch" ? "Confirm in wallet…" : `Switch to ${targetChainName()}`}</button>
           : hasPos
-            ? <button className="go locked" disabled>Position open — manage it below</button>
+            ? <button className="go locked" disabled>Position open. Manage it below</button>
             : <button className={"go " + side} disabled={!!ex.busy || margin <= 0} onClick={() => ex.actions.open({ marketId: m.id, side, margin: marginStr, leverage: lev })}>
                 {ex.busy === "open" ? "Submitting…" : `${side === "long" ? "Long" : "Short"} ${m.symbol} · ${lev}×`}
               </button>}
@@ -543,7 +543,7 @@ function Positions({ ex, setSheet }) {
           <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}<span className="count">{n}</span></button>
         ))}
       </div>
-      {tab === "ord" && <div className="empty"><b>No resting orders.</b><span>Stoxhome fills against the pool at mark — there is no order book to wait on.</span></div>}
+      {tab === "ord" && <div className="empty"><b>No resting orders.</b><span>Stoxhome fills against the pool at mark, so there is no order book to wait on.</span></div>}
       {tab === "his" && (ex.history.length ? <History rows={ex.history} /> : <div className="empty"><b>No trades yet.</b><span>{ex.wallet.connected ? "Your opens, modifies and closes appear here." : "Connect a wallet to see your history."}</span></div>)}
       {tab === "pos" && ex.positions.length === 0 && <div className="empty"><b>No open positions.</b><span>{ex.wallet.connected ? "Pick a city above and open one from the order ticket." : "Connect a wallet to see your positions."}</span></div>}
       {tab === "pos" && ex.positions.length > 0 && <div className="tbl">
@@ -586,7 +586,7 @@ function History({ rows }) {
           <span data-k="Action">{r.action}</span>
           <span data-k="Size">{r.size.toLocaleString()} u</span>
           <span data-k="Price">{r.price.toFixed(2)}</span>
-          <span data-k="Realised" className={r.pnl == null ? "" : r.pnl >= 0 ? "up" : "dn"}>{r.pnl == null ? "—" : (r.pnl >= 0 ? "+" : "−") + usd(Math.abs(r.pnl), 2)}</span>
+          <span data-k="Realised" className={r.pnl == null ? "" : r.pnl >= 0 ? "up" : "dn"}>{r.pnl == null ? "-" : (r.pnl >= 0 ? "+" : "−") + usd(Math.abs(r.pnl), 2)}</span>
         </div>
       ))}
     </div>
@@ -598,7 +598,7 @@ function Tape({ trades }) {
     <section className="panel tape" id="tape">
       <div className="sec-head"><h3>Live tape</h3><span className="live"><i />Streaming</span></div>
       <ol>
-        {trades.length === 0 && <li className="tape-empty">{USE_MOCK ? "" : "No trades indexed yet — or the indexer is offline."}</li>}
+        {trades.length === 0 && <li className="tape-empty">{USE_MOCK ? "" : "No trades yet."}</li>}
         {trades.slice(0, 9).map((t) => (
           <li key={t.id} className={t.side}>
             <span className="tt">{new Date(t.ts).toLocaleTimeString("en-GB")}</span>
@@ -662,8 +662,8 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
       <div className="vault-l">
         <p className="eyebrow">Liquidity vault · {ENGINE_MODE ? "USD" : "USDT"} <Custody /></p>
         <h3>Be the house.</h3>
-        <p className="lede">LPs are the counterparty to every trade — earning fees, funding from the crowded side and trader losses.</p>
-        <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.engine ? "Fee APR, trailing 7d" : ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
+        <p className="lede">LPs are the counterparty to every trade. They earn fees, funding from the crowded side and trader losses.</p>
+        <div className="apr"><b>{pool.apr == null ? "-" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.engine ? "Fee APR, trailing 7d" : ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
         <div className="apr-split">
           {pool.feesApr != null && <span><i style={{ background: "#fff" }} />Fees {(pool.feesApr * 100).toFixed(1)}%</span>}
           {pool.fundingApr != null && <span><i style={{ background: "#9fb0ff" }} />Funding {(pool.fundingApr * 100).toFixed(1)}%</span>}
@@ -683,7 +683,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
           <ul>{pool.composition.map((c, i) => { acc += c.value; return <li key={c.label}><i style={{ background: colors[i] }} />{c.label}<b>{(c.value * 100).toFixed(0)}%</b></li>; })}</ul>
         </div>
         {w && <div className="pending">
-          <div className="pend-top"><span>Pending withdrawal · {w.shares.toLocaleString(undefined, { maximumFractionDigits: 2 })} shares ≈ {usd(w.estimatedAmount ?? w.shares * pool.sharePrice)}</span><b>{expired ? "Expired — cancel & re-request" : unlocked ? "Unlocked" : "Unlocks in " + countdown(w.unlockAt - now)}</b></div>
+          <div className="pend-top"><span>Pending withdrawal · {w.shares.toLocaleString(undefined, { maximumFractionDigits: 2 })} shares ≈ {usd(w.estimatedAmount ?? w.shares * pool.sharePrice)}</span><b>{expired ? "Expired. Cancel and request again" : unlocked ? "Unlocked" : "Unlocks in " + countdown(w.unlockAt - now)}</b></div>
           <div className="pend-bar"><i style={{ width: done * 100 + "%" }} />{[0.25, 0.5, 0.75].map((q) => <em key={q} style={{ left: q * 100 + "%" }} />)}</div>
           <div className="pend-ax"><span>Requested</span><span>{Math.round(cooldown / 3600)}h cooldown</span><span>Withdrawable</span></div>
           <div className="pend-btns">

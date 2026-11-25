@@ -84,7 +84,7 @@ function Deposit({ ex }) {
         <div>
           <span className="lbl">Deposit address · Solana · {token}</span>
           <code>{cfg.companyAddress}</code>
-          <div className="drow"><Copy text={cfg.companyAddress} /><span className="lbl">From {ex.wallet.address} only · min {cfg.minDeposit ?? "—"} {token} · credited when finalized</span></div>
+          <div className="drow"><Copy text={cfg.companyAddress} /><span className="lbl">From {ex.wallet.address} only · min {cfg.minDeposit ?? "-"} {token} · credited when finalized</span></div>
         </div>
       </div>
       <label className="field">
@@ -97,8 +97,8 @@ function Deposit({ ex }) {
           <span className="lbl">Your deposit</span>
           {tracked?.status === "credited"
             ? <p className="up">Credited {usd(Number(tracked.amount))} to your balance ✓</p>
-            : tracked?.status === "below_minimum" ? <p className="dn">Below the minimum deposit — contact support.</p>
-            : tracked?.status === "unattributed" ? <p className="dn">Received but not attributed automatically — support will review it.</p>
+            : tracked?.status === "below_minimum" ? <p className="dn">Below the minimum deposit. Please contact support.</p>
+            : tracked?.status === "unattributed" ? <p className="dn">Received, but it couldn't be matched to your account automatically. Support will review it.</p>
             : <><p>Waiting for Solana finalization…</p>
                 <div className="pend-bar dark indet"><i style={{ width: tracked ? "60%" : "15%" }} /></div></>}
           <TxLink hash={sent} explorer={ex.explorer} />
@@ -141,7 +141,7 @@ function Withdraw({ ex }) {
             <li key={w.id}>
               <span>{when(w.at)}</span><b>{usd(Number(w.amount))} {w.token || ""}</b>
               <em className={w.status === "paid" ? "up" : w.status === "rejected" ? "dn" : ""}>{w.status}</em>
-              {w.status === "pending" && (w.locked || w.lockedAt || w.paying) ? <em>Being paid — can't cancel</em> : w.status === "pending" ? <button className="mini" disabled={!!ex.busy} onClick={() => ex.actions.cancelPayout({ id: w.id })}>Cancel</button> : <TxLink hash={w.signature || w.txHash} explorer={ex.explorer} />}
+              {w.status === "pending" && (w.locked || w.lockedAt || w.paying) ? <em>Being paid, can't cancel</em> : w.status === "pending" ? <button className="mini" disabled={!!ex.busy} onClick={() => ex.actions.cancelPayout({ id: w.id })}>Cancel</button> : <TxLink hash={w.signature || w.txHash} explorer={ex.explorer} />}
             </li>
           ))}
         </ul>

@@ -60,7 +60,7 @@ export default function Landing({ ex, enter }) {
       <div className="ticker lp-ticker" aria-label="Live index prices">
         <div className="ticker-in">
           {[0, 1, 2].map((r) => list.map((c) => (
-            <span key={r + c.symbol}><b>{c.symbol}</b> {c.index != null ? c.index.toFixed(2) : "—"} {c.change24h != null && <i className={c.change24h >= 0 ? "up" : "dn"}>{pctS(c.change24h, 3)}</i>} {c.funding != null && <small>F {pctS(c.funding, 4)}</small>}</span>
+            <span key={r + c.symbol}><b>{c.symbol}</b> {c.index != null ? c.index.toFixed(2) : "-"} {c.change24h != null && <i className={c.change24h >= 0 ? "up" : "dn"}>{pctS(c.change24h, 3)}</i>} {c.funding != null && <small>F {pctS(c.funding, 4)}</small>}</span>
           )))}
         </div>
       </div>
@@ -69,7 +69,7 @@ export default function Landing({ ex, enter }) {
         <div className="lp-head" data-reveal><p className="eyebrow">01 · How it works</p><h2>Three steps to a <em>city</em> position.</h2></div>
         <ol className="lp-steps">
           {[
-            ["Connect a Solana wallet", "Phantom, Solflare, Backpack or any wallet-standard wallet. Sign one message to prove it is yours — no seed phrases, no forms."],
+            ["Connect a Solana wallet", "Phantom, Solflare, Backpack or any wallet-standard wallet. Sign one message to prove it is yours. No seed phrases, no forms."],
             ["Deposit USDC or USDT", "Send stablecoins to your Stoxhome account. Your balance is credited once the transfer confirms on Solana."],
             ["Long or short a city, up to 100×", "Pick a market, set margin and leverage, and open. Close any time; funding nets between longs and shorts daily."],
           ].map(([t, d], k) => (
@@ -89,7 +89,7 @@ export default function Landing({ ex, enter }) {
               <Skyline symbol={c.symbol} seed={i + 1} />
               <div className="lp-card-meta">
                 <span className="sym">{c.symbol}</span>
-                <span className="cpx">{c.index != null ? c.index.toFixed(2) : "—"}</span>
+                <span className="cpx">{c.index != null ? c.index.toFixed(2) : "-"}</span>
                 <span className="cname">{c.city}</span>
                 {c.change1y != null ? <span className={"cchg " + (c.change1y >= 0 ? "up" : "dn")}>{pctS(c.change1y, 1)} 1Y</span>
                   : c.change24h != null ? <span className={"cchg " + (c.change24h >= 0 ? "up" : "dn")}>{pctS(c.change24h, 2)} 24h</span> : <span />}
@@ -104,7 +104,7 @@ export default function Landing({ ex, enter }) {
         <div className="lp-head" data-reveal><p className="eyebrow">03 · Why house prices</p><h2>The world's biggest asset, <em>finally</em> tradable.</h2></div>
         <div className="lp-why-grid">
           {[
-            ["$300T+", "Global residential real estate — larger than equities and bonds combined, yet almost impossible to trade."],
+            ["$300T+", "Global residential real estate is larger than equities and bonds combined, yet almost impossible to trade."],
             ["Slow & sticky", "Home prices move in long cycles driven by rates, wages and supply. Trends persist; perps let you ride them."],
             ["Hedge your life", "Renting in London and worried about missing out? Own a home in Miami and want protection? Take the other side."],
             ["No closing costs", "No mortgage, no stamp duty, no tenants. Pure price exposure, opened and closed in seconds."],
@@ -116,13 +116,13 @@ export default function Landing({ ex, enter }) {
         <div className="lp-vault-l">
           <p className="eyebrow">04 · Liquidity vault</p>
           <h2>Be the <em>house</em>.</h2>
-          <p>Vault depositors are the counterparty to every trade. They earn trading fees, funding paid by the crowded side, and trader losses — and they carry trader profits.</p>
+          <p>Vault depositors are the counterparty to every trade. They earn trading fees, funding paid by the crowded side, and trader losses. In return, they cover trader profits.</p>
           <a className="lp-cta lp-cta-inv" href="/app#vault" onClick={go("vault")}>Open the vault →</a>
         </div>
         <dl className="lp-vault-r">
-          <div><dt>Vault APR</dt><dd>{markets && ex.pool?.apr != null ? (ex.pool.apr * 100).toFixed(1) + "%" : "—"}</dd></div>
-          <div><dt>Pool value</dt><dd>{markets && ex.pool ? compact(ex.pool.poolValue) : "—"}</dd></div>
-          <div><dt>Utilization</dt><dd>{markets && ex.pool ? (ex.pool.utilization * 100).toFixed(0) + "%" : "—"}</dd></div>
+          <div><dt>Vault APR</dt><dd>{markets && ex.pool?.apr != null ? (ex.pool.apr * 100).toFixed(1) + "%" : "-"}</dd></div>
+          <div><dt>Pool value</dt><dd>{markets && ex.pool ? compact(ex.pool.poolValue) : "-"}</dd></div>
+          <div><dt>Utilization</dt><dd>{markets && ex.pool ? (ex.pool.utilization * 100).toFixed(0) + "%" : "-"}</dd></div>
           <div><dt>Withdrawals</dt><dd>Cooldown</dd></div>
         </dl>
       </section>

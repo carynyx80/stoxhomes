@@ -31,7 +31,7 @@ function useMockExchange() {
     return () => clearInterval(h);
   }, []);
   const markets = mock.getMarkets(), pool = mock.getPool();
-  const note = (text) => { const id = Math.random(); setToasts((x) => [...x, { id, kind: "ok", text: "Mock mode — " + text }]); setTimeout(() => setToasts((x) => x.filter((y) => y.id !== id)), 4000); return true; };
+  const note = (text) => { const id = Math.random(); setToasts((x) => [...x, { id, kind: "ok", text: "Mock mode: " + text }]); setTimeout(() => setToasts((x) => x.filter((y) => y.id !== id)), 4000); return true; };
   const actions = Object.fromEntries(["connect", "faucet", "open", "increase", "reduce", "addMargin", "close", "deposit", "requestWithdraw", "cancelWithdraw", "withdraw"].map((k) => [k, async () => note(k + " (no transaction sent)")]));
   return {
     ready: true, live: false, error: null, busy: null, clockOffset: 0, faucet: true, apiOnline: true,
