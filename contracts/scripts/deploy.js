@@ -37,17 +37,28 @@ async function main() {
     // Real money: refuse unless every production input is explicit.
     if (process.env.CONFIRM_MAINNET !== "yes") throw new Error("Set CONFIRM_MAINNET=yes to deploy to BSC mainnet");
     if (!process.env.KEEPER_ADDRESS) throw new Error("KEEPER_ADDRESS (keeper bot wallet) is required on mainnet");
-    if (!process.env.INITIAL_INDEX_FILE) {
-      throw new Error("INITIAL_INDEX_FILE is required on mainnet: real published index values, not the placeholders");
+    if (!process.env.INITIAL_INDEX_FILE && !process.env.INITIAL_INDEX_JSON) {
+      throw new Error("INITIAL_INDEX_FILE or INITIAL_INDEX_JSON is required on mainnet: real published index values");
     }
     process.env.COLLATERAL_ADDRESS = process.env.COLLATERAL_ADDRESS || BSC_USDT;
+    // One deployment per deployer wallet: a re-run (e.g. a redeploy of a one-shot job) must not
+    // create a second set of contracts and spend gas again.
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
+    if (nonce !== 0 && process.env.ALLOW_USED_DEPLOYER !== "yes") {
+      throw new Error(`Deployer ${deployer.address} has already sent ${nonce} txs; use a fresh wallet (or ALLOW_USED_DEPLOYER=yes)`);
+    }
+    const bnb = await ethers.provider.getBalance(deployer.address);
+    if (bnb < ethers.parseEther("0.01")) throw new Error(`Deployer needs BNB for gas (has ${ethers.formatEther(bnb)})`);
   }
-  if (process.env.INITIAL_INDEX_FILE) {
+  if (process.env.INITIAL_INDEX_FILE || process.env.INITIAL_INDEX_JSON) {
     // JSON object {"NYC": 331.2, ...} with the latest published value per market.
-    const values = JSON.parse(fs.readFileSync(path.resolve(process.env.INITIAL_INDEX_FILE), "utf8"));
+    const values = JSON.parse(
+      process.env.INITIAL_INDEX_JSON || fs.readFileSync(path.resolve(process.env.INITIAL_INDEX_FILE), "utf8")
+    );
     for (const m of MARKETS) {
       if (!(m.symbol in values)) throw new Error(`INITIAL_INDEX_FILE is missing ${m.symbol}`);
       m.index = Number(values[m.symbol]);
+      if (!Number.isFinite(m.index) || m.index <= 0) throw new Error(`Invalid index value for ${m.symbol}`);
     }
   }
   const startBlock = await ethers.provider.getBlockNumber();
@@ -130,6 +141,8 @@ async function main() {
     fs.writeFileSync(path.join(out, `${name}.json`), JSON.stringify(abi, null, 2));
   }
   console.log(`Wrote ${file}`);
+  // Machine-readable line so a remote deploy (e.g. a one-shot Railway job) can be copied back.
+  console.log(`DEPLOYMENT_JSON ${JSON.stringify({ chainId, ...existing[chainId] })}`);
 }
 
 main().catch((e) => {
