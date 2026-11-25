@@ -37,10 +37,16 @@ export default function AppShell({ slides, header, children }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [i, go]);
 
+  useEffect(() => {
+    const b = document.querySelector(".slidemenu button.on");
+    const m = b && b.closest(".slidemenu");
+    if (m) m.scrollTo({ left: Math.max(0, b.offsetLeft - 16), behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }, [i]);
+
   const onTouchStart = (e) => {
     const p = e.touches[0];
     const t = e.target;
-    if (t.closest && t.closest("input[type=range], .chart, .noswipe")) { touch.current = null; return; }
+    if (t.closest && t.closest("input[type=range], .chart, .cities, .slidemenu, .noswipe")) { touch.current = null; return; }
     touch.current = { x: p.clientX, y: p.clientY, t: Date.now() };
   };
   const onTouchEnd = (e) => {
@@ -64,8 +70,8 @@ export default function AppShell({ slides, header, children }) {
           <i className="sm-bar" style={{ "--k": i, "--n": n }} />
         </div>
       </nav>
-      <div className="stage" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-        <div className="track" ref={track} style={{ transform: `translate3d(${-i * 100}%,0,0)` }}>
+      <div className="stage" onScroll={(e) => { if (e.currentTarget.scrollLeft) e.currentTarget.scrollLeft = 0; }} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div className="slidetrack" ref={track} style={{ transform: `translate3d(${-i * 100}%,0,0)` }}>
           {slides.map((s, k) => (
             <section key={s.id} className={"slide" + (k === i ? " on" : "")} id={"slide-" + s.id} aria-hidden={k !== i} inert={k !== i ? "" : undefined} aria-label={s.label}>
               <div className="slide-in">{s.render()}</div>

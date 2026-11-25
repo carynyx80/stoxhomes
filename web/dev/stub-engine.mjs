@@ -193,6 +193,7 @@ const routes = {
     return { companyOnChain: { USDC: s(cw.USDC), USDT: s(cw.USDT), total: s(onchain) }, companySol: s(cw.sol, 9), unattributedDeposits: unattributed.filter((d) => !d.resolved), companyUsdtOnChain: s(onchain), liabilities: { users: s(usersL), vault: s(vault.value), protocolFees: s(protocolFees) }, surplus: s(onchain - usersL - vault.value - protocolFees), pendingWithdrawals: { count: pend.length, amount: s(pend.reduce((t, w) => t + w.amount, 0)) } };
   },
   "GET /admin/withdrawals": ({ q }) => withdrawals.filter((w) => !q.status || w.status === q.status).map(wView),
+  "GET /admin/deposits": ({ q }) => unattributed.filter((d) => (q.status || "unattributed") === "unattributed" ? !d.resolved : true),
   "POST /admin/deposits/:signature/credit": ({ params, body }) => { const d = unattributed.find((x) => x.signature === params.signature && !x.resolved); if (!d) throw fail("NOT_FOUND", "No such unattributed deposit"); const a = addrOf(body.address); d.resolved = true; user(a).available += Number(d.amount); deposits.set(d.signature + ":" + d.token, { address: a, signature: d.signature, token: d.token, amount: Number(d.amount), status: "credited", at: now() }); notify(a); return { ok: true }; },
   "POST /admin/withdrawals/:id/paid": async ({ params, body }) => {
     const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending");
@@ -211,7 +212,7 @@ const routes = {
     }
     w.status = "paid"; w.txHash = body.txHash; notify(w.address, "withdrawal"); return wView(w);
   },
-  "POST /admin/withdrawals/:id/lock": ({ params }) => { const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending"); if (SOL && !body.blockhash) throw fail("BAD_INPUT", "blockhash required"); w.locked = true; w.lockBlockhash = body.blockhash; return wView(w); },
+  "POST /admin/withdrawals/:id/lock": ({ params, body }) => { const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending"); if (SOL && !body.blockhash) throw fail("BAD_INPUT", "blockhash required"); w.locked = true; w.lockBlockhash = body.blockhash; return wView(w); },
   "POST /admin/withdrawals/:id/reject": ({ params, body }) => { const w = withdrawals.find((x) => x.id === params.id); if (!w || w.status !== "pending") throw fail("NOT_PENDING", "Withdrawal is not pending"); w.status = "rejected"; w.reason = body.reason; user(w.address).available += w.amount; notify(w.address, "withdrawal"); return wView(w); },
   "POST /admin/index": ({ body }) => { const m = MARKETS.find((x) => x.symbol === body.symbol); const v = Number(body.value); if (!m || !(v > 0)) throw fail("BAD_PARAM", "Unknown market or value"); if (Math.abs(v / m.index - 1) > 0.1) throw fail("BAD_PARAM", "Print moves more than 10%"); m.target = v; m.lastPrint = { value: s(v), at: now() }; m.nextPrintAt = null; hist[m.id].push({ at: now(), value: s(v, 2) }); return marketView(m); },
   "POST /admin/schedule-print": ({ body }) => { const m = MARKETS.find((x) => x.symbol === body.symbol); if (!m) throw fail("BAD_PARAM", "Unknown market"); m.nextPrintAt = Number(body.at); return marketView(m); },

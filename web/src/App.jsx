@@ -212,7 +212,7 @@ function SlideDesk({ ex, nav }) {
       </div>
     </> },
     { id: "vault", label: "Vault", render: () => <>
-      <SlideHead n="03" sub="Liquidity vault" title="Be the" em="house." />
+      <SlideHead n="03" sub="Liquidity vault" title="Earn as the" em="counterparty." />
       <Vault ex={ex} pool={ex.pool} now={now} cooldown={ex.params.withdrawCooldown} setSheet={setSheet} />
     </> },
     { id: "funding", label: "Funding", render: () => <>

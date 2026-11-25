@@ -143,7 +143,7 @@ function useSolanaDiscovery() {
     const offs = api ? [api.on("register", build), api.on("unregister", build)] : [];
     // wallets may register (or inject window.phantom) well after load: keep rebuilding for a few seconds
     const timers = [300, 700, 1500, 3000].map((ms) => setTimeout(build, ms));
-    const done = setTimeout(() => setDetecting(false), 3200);
+    const done = setTimeout(() => setDetecting(false), 2000);
     return () => { timers.forEach(clearTimeout); clearTimeout(done); offs.forEach((o) => o?.()); };
   }, []);
   return { list, detecting };
