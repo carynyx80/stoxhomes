@@ -49,12 +49,22 @@ async function main() {
     console.log(`  market ${m.symbol}-USD @ ${m.index}`);
   }
 
+  // Optional: protocol fee recipient (defaults to deployer, 10% of trading fees) and keeper bot.
+  if (process.env.FEE_RECIPIENT) {
+    await (await exchange.setProtocolFee(process.env.FEE_RECIPIENT, 1_000)).wait();
+    console.log("  protocol fee recipient", process.env.FEE_RECIPIENT);
+  }
+  if (process.env.KEEPER_ADDRESS) {
+    await (await oracle.setKeeper(process.env.KEEPER_ADDRESS, true)).wait();
+    console.log("  keeper", process.env.KEEPER_ADDRESS);
+  }
+
   // Local dev convenience: fund the deployer and seed the pool.
   if (!process.env.COLLATERAL_ADDRESS && (network.name === "localhost" || network.name === "hardhat")) {
     const usdt = await ethers.getContractAt("MockUSDT", usdtAddress);
     await (await usdt.mint(deployer.address, E(2_000_000))).wait();
     await (await usdt.approve(await exchange.getAddress(), ethers.MaxUint256)).wait();
-    await (await exchange.deposit(E(1_000_000))).wait();
+    await (await exchange.deposit(E(1_000_000), 0)).wait();
     console.log("  seeded pool with 1,000,000 USDT");
   }
 

@@ -1,0 +1,4 @@
+node_modules
+.env
+data/.publisher-state.json
+deployments.local.json

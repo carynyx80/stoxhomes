@@ -28,7 +28,7 @@ describe("HousePerpExchange", () => {
       await usdt.mint(s.address, E(10_000_000));
       await usdt.connect(s).approve(await ex.getAddress(), ethers.MaxUint256);
     }
-    await ex.connect(lp).deposit(E(1_000_000));
+    await ex.connect(lp).deposit(E(1_000_000), 0);
   });
 
   describe("oracle", () => {
@@ -169,10 +169,12 @@ describe("HousePerpExchange", () => {
       await ex.connect(alice).openPosition(0, E(1000), E(3200), E(301));
       const liq = (await ex.positionInfo(0, alice.address)).liquidationPrice;
       // push index a hair above and below the computed liq price
-      await oracle.setParams(0, 1000);
+      await oracle.setParams(3600, 1000);
       await oracle.pushIndex(NYC, liq + E(0.01));
+      await time.increase(3600);
       expect((await ex.positionInfo(0, alice.address)).liquidatable).to.equal(false);
       await oracle.pushIndex(NYC, liq - E(0.01));
+      await time.increase(3600);
       expect((await ex.positionInfo(0, alice.address)).liquidatable).to.equal(true);
     });
 
@@ -201,15 +203,19 @@ describe("HousePerpExchange", () => {
       await ex.connect(alice).closePosition(0, 0);
       expect(await ex.poolValue()).to.be.gt(E(1_000_000));
       const s = await ex.shares(lp.address);
+      await ex.connect(lp).requestWithdraw(s);
+      await time.increase(DAY);
       const before = await usdt.balanceOf(lp.address);
-      await ex.connect(lp).withdraw(s);
+      await ex.connect(lp).withdraw(s, 0);
       expect((await usdt.balanceOf(lp.address)) - before).to.be.gt(E(1_000_000));
     });
 
     it("blocks withdrawals that would breach the skew cap", async () => {
       await ex.connect(alice).openPosition(0, E(9000), E(100_000), E(320));
       const s = await ex.shares(lp.address);
-      await expect(ex.connect(lp).withdraw(s / 2n)).to.be.revertedWithCustomError(ex, "InsufficientLiquidity");
+      await ex.connect(lp).requestWithdraw(s / 2n);
+      await time.increase(DAY);
+      await expect(ex.connect(lp).withdraw(s / 2n, 0)).to.be.revertedWithCustomError(ex, "InsufficientLiquidity");
     });
   });
 });

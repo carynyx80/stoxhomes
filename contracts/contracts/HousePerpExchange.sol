@@ -30,6 +30,10 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
     uint256 internal constant BPS = 10_000;
     uint256 public constant MAX_LEVERAGE = 100;
     uint256 public constant MAX_MARKETS = 32;
+    uint256 public constant VIRTUAL_SHARES = 1e6; // ERC4626-style inflation-attack offset
+    uint256 public constant VIRTUAL_ASSETS = 1;
+    uint256 public constant MIN_LIQUIDATION_REWARD = 5e18; // paid from pool cash for bad-debt liquidations
+    uint256 public constant PRINT_GRACE = 24 hours; // close-only ends this long after a missed print
 
     struct Market {
         string name; // e.g. "NYC-USD"
@@ -44,13 +48,33 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         uint64 lastFundingTime;
         uint256 longSize;
         uint256 shortSize;
+        uint256 marginTotal; // sum of margins of this market's positions
     }
 
     struct Position {
         int256 size; // positive = long, negative = short (WAD units of the index)
         uint256 margin; // USDT (18 decimals)
         uint256 entryPrice; // fill price at open (WAD)
-        int256 entryFunding; // market.fundingIndex at open
+        int256 entryFunding; // market.fundingIndex at open / last settlement
+        int256 sizeEntry; // this position's exact contribution to market.sumSizeEntry
+    }
+
+    struct MarketView {
+        uint256 marketId;
+        string name;
+        bytes32 oracleId;
+        bool active;
+        uint256 skewScale;
+        uint256 maxFundingRatePerDay;
+        uint256 maxSkewToPoolBps;
+        int256 skew;
+        uint256 longSize;
+        uint256 shortSize;
+        uint256 indexPrice;
+        uint256 markPrice;
+        int256 fundingRatePerDay;
+        bool closeOnly;
+        uint256 scheduledPrint;
     }
 
     IERC20 public immutable collateral;
@@ -60,6 +84,19 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
     uint256 public maintenanceMarginBps = 50; // 0.5% of notional
     uint256 public liquidationFeeBps = 20; // 0.2% of notional to the liquidator, capped by equity
     uint256 public maxOracleAge = 45 days; // monthly data + publication lag
+    /// @notice Opening/increasing is blocked this long before a scheduled print until it lands.
+    uint256 public closeOnlyBefore = 6 hours;
+    /// @notice Delay between requestWithdraw and withdraw.
+    uint256 public withdrawCooldown = 24 hours;
+    /// @notice After unlocking, a request can be executed for this long (0 = forever).
+    uint256 public withdrawWindow = 3 days;
+    /// @notice Share of trading fees (bps of the fee) that goes to the protocol.
+    uint256 public protocolFeeShareBps = 1_000; // 10%
+    address public feeRecipient;
+    /// @notice Unclaimed protocol fees held by the contract (not pool money).
+    uint256 public protocolFeesAccrued;
+    /// @notice Global cap: sum over markets of |skew| * index <= poolValue * this / BPS.
+    uint256 public maxTotalSkewToPoolBps = 50_000; // 5x
 
     Market[] internal _markets;
     mapping(uint256 => mapping(address => Position)) public positions;
@@ -67,6 +104,10 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
     uint256 public totalMargin; // collateral held as trader margin (not pool money)
     uint256 public totalShares;
     mapping(address => uint256) public shares;
+    mapping(address => uint256) public pendingWithdrawShares;
+    mapping(address => uint256) public withdrawUnlockTime;
+    /// @notice USDT value of the pending shares at request time (withdraw pays min(then, now)).
+    mapping(address => uint256) public pendingWithdrawValue;
 
     event MarketAdded(uint256 indexed marketId, string name, bytes32 oracleId);
     event MarketUpdated(uint256 indexed marketId);
@@ -82,6 +123,24 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
     );
     event Deposit(address indexed lp, uint256 amount, uint256 sharesMinted);
     event Withdraw(address indexed lp, uint256 amount, uint256 sharesBurned);
+    event PositionModified(
+        uint256 indexed marketId,
+        address indexed trader,
+        int256 sizeDelta,
+        int256 newSize,
+        uint256 fillPrice,
+        uint256 newEntryPrice,
+        uint256 newMargin,
+        int256 realizedPnl,
+        int256 fundingSettled,
+        uint256 fee
+    );
+    event WithdrawRequested(address indexed lp, uint256 shares, uint256 unlockTime);
+    event WithdrawCancelled(address indexed lp, uint256 shares);
+    event ProtocolFeesClaimed(address indexed recipient, uint256 amount);
+    event ProtocolFeeSet(address indexed feeRecipient, uint256 protocolFeeShareBps);
+    event PoolParamsSet(uint256 closeOnlyBefore, uint256 withdrawCooldown, uint256 withdrawWindow);
+    event MaxTotalSkewSet(uint256 maxTotalSkewToPoolBps);
     event FeesSet(uint256 tradingFeeBps, uint256 maintenanceMarginBps, uint256 liquidationFeeBps, uint256 maxOracleAge);
 
     error MarketInactive();
@@ -97,10 +156,18 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
     error InsufficientLiquidity();
     error SlippageExceeded();
     error BadParam();
+    error CloseOnly();
+    error FlipNotAllowed();
+    error WithdrawLocked();
+    error WithdrawExpired();
+    error ExceedsPending();
+    error WithdrawPending();
+    error PoolInsolvent();
 
     constructor(address owner_, IERC20 collateral_, HouseIndexOracle oracle_) Ownable(owner_) {
         collateral = collateral_;
         oracle = oracle_;
+        feeRecipient = owner_;
     }
 
     // ---------------------------------------------------------------------
@@ -161,28 +228,97 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         emit FeesSet(tradingFeeBps_, maintenanceMarginBps_, liquidationFeeBps_, maxOracleAge_);
     }
 
+    function setProtocolFee(address recipient, uint256 shareBps) external onlyOwner {
+        if (recipient == address(0) || shareBps > BPS) revert BadParam();
+        feeRecipient = recipient;
+        protocolFeeShareBps = shareBps;
+        emit ProtocolFeeSet(recipient, shareBps);
+    }
+
+    function setPoolParams(uint256 closeOnlyBefore_, uint256 withdrawCooldown_, uint256 withdrawWindow_)
+        external
+        onlyOwner
+    {
+        if (closeOnlyBefore_ > 7 days || withdrawCooldown_ > 30 days) revert BadParam();
+        closeOnlyBefore = closeOnlyBefore_;
+        withdrawCooldown = withdrawCooldown_;
+        withdrawWindow = withdrawWindow_;
+        emit PoolParamsSet(closeOnlyBefore_, withdrawCooldown_, withdrawWindow_);
+    }
+
+    function setMaxTotalSkew(uint256 bps) external onlyOwner {
+        if (bps == 0) revert BadParam();
+        maxTotalSkewToPoolBps = bps;
+        emit MaxTotalSkewSet(bps);
+    }
+
+    /// @notice Sends all unclaimed protocol fees to `feeRecipient`. Callable by anyone.
+    function claimProtocolFees() external nonReentrant returns (uint256 amount) {
+        amount = protocolFeesAccrued;
+        if (amount == 0) revert ZeroAmount();
+        protocolFeesAccrued = 0;
+        collateral.safeTransfer(feeRecipient, amount);
+        emit ProtocolFeesClaimed(feeRecipient, amount);
+    }
+
     // ---------------------------------------------------------------------
     // Liquidity pool
     // ---------------------------------------------------------------------
 
-    function deposit(uint256 amount) external nonReentrant returns (uint256 minted) {
+    function deposit(uint256 amount, uint256 minSharesOut) external nonReentrant returns (uint256 minted) {
         if (amount == 0) revert ZeroAmount();
         _accrueAll();
         uint256 nav = poolValue();
-        minted = (totalShares == 0 || nav == 0) ? amount : (amount * totalShares) / nav;
+        if (nav == 0 && totalShares > 0) revert PoolInsolvent();
+        minted = (amount * (totalShares + VIRTUAL_SHARES)) / (nav + VIRTUAL_ASSETS);
         if (minted == 0) revert ZeroAmount();
+        if (minted < minSharesOut) revert SlippageExceeded();
         collateral.safeTransferFrom(msg.sender, address(this), amount);
         totalShares += minted;
         shares[msg.sender] += minted;
         emit Deposit(msg.sender, amount, minted);
     }
 
-    function withdraw(uint256 shareAmount) external nonReentrant returns (uint256 amount) {
+    /// @notice Start the withdrawal cooldown for `shareAmount` shares (replaces any pending request
+    ///         and restarts the timer). Shares stay in the pool, exposed to PnL, until withdrawn.
+    function requestWithdraw(uint256 shareAmount) external nonReentrant {
         if (shareAmount == 0) revert ZeroAmount();
+        if (pendingWithdrawShares[msg.sender] != 0) revert WithdrawPending();
+        if (shareAmount > shares[msg.sender]) revert ExceedsPending();
+        uint256 unlock = block.timestamp + withdrawCooldown;
+        shares[msg.sender] -= shareAmount; // escrowed until withdraw or cancel
+        pendingWithdrawShares[msg.sender] = shareAmount;
+        pendingWithdrawValue[msg.sender] = _sharesToAssets(shareAmount, poolValue());
+        withdrawUnlockTime[msg.sender] = unlock;
+        emit WithdrawRequested(msg.sender, shareAmount, unlock);
+    }
+
+    function cancelWithdraw() external {
+        uint256 pending = pendingWithdrawShares[msg.sender];
+        if (pending == 0) revert ZeroAmount();
+        pendingWithdrawShares[msg.sender] = 0;
+        pendingWithdrawValue[msg.sender] = 0;
+        withdrawUnlockTime[msg.sender] = 0;
+        shares[msg.sender] += pending;
+        emit WithdrawCancelled(msg.sender, pending);
+    }
+
+    /// @notice Withdraw up to the requested shares once the cooldown has passed.
+    function withdraw(uint256 shareAmount, uint256 minAmountOut) external nonReentrant returns (uint256 amount) {
+        if (shareAmount == 0) revert ZeroAmount();
+        uint256 pending = pendingWithdrawShares[msg.sender];
+        if (shareAmount > pending) revert ExceedsPending();
+        uint256 unlock = withdrawUnlockTime[msg.sender];
+        if (block.timestamp < unlock) revert WithdrawLocked();
+        if (withdrawWindow != 0 && block.timestamp > unlock + withdrawWindow) revert WithdrawExpired();
         _accrueAll();
         uint256 nav = poolValue();
-        amount = (shareAmount * nav) / totalShares;
-        shares[msg.sender] -= shareAmount;
+        uint256 valueAtRequest = (pendingWithdrawValue[msg.sender] * shareAmount) / pending;
+        amount = _sharesToAssets(shareAmount, nav);
+        if (amount > valueAtRequest) amount = valueAtRequest;
+        if (amount < minAmountOut) revert SlippageExceeded();
+        pendingWithdrawShares[msg.sender] = pending - shareAmount;
+        pendingWithdrawValue[msg.sender] -= valueAtRequest;
         totalShares -= shareAmount;
         // Every market must still respect its skew cap against the smaller pool.
         uint256 navAfter = nav - amount;
@@ -194,6 +330,30 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         emit Withdraw(msg.sender, amount, shareAmount);
     }
 
+    /// @notice Pending withdrawal for the frontend: shares, unlock time, expiry (0 = none) and the
+    ///         current USDT value of those shares.
+    function pendingWithdrawal(address lp)
+        external
+        view
+        returns (uint256 pendingShares, uint256 unlockTime, uint256 expiresAt, uint256 estimatedAmount)
+    {
+        pendingShares = pendingWithdrawShares[lp];
+        if (pendingShares == 0) return (0, 0, 0, 0);
+        unlockTime = withdrawUnlockTime[lp];
+        expiresAt = withdrawWindow == 0 ? 0 : unlockTime + withdrawWindow;
+        estimatedAmount = _sharesToAssets(pendingShares, poolValue());
+        if (estimatedAmount > pendingWithdrawValue[lp]) estimatedAmount = pendingWithdrawValue[lp];
+    }
+
+    function _sharesToAssets(uint256 shareAmount, uint256 nav) internal view returns (uint256) {
+        return (shareAmount * (nav + VIRTUAL_ASSETS)) / (totalShares + VIRTUAL_SHARES);
+    }
+
+    /// @notice Pool cash: contract balance minus trader margin minus unclaimed protocol fees.
+    function poolCash() external view returns (uint256) {
+        return _freeBalance();
+    }
+
     /// @notice Pool value = pool cash minus traders' net unrealized PnL (at index price).
     ///         Accrued-but-unsettled funding is not included (funding nets out across sides
     ///         except for the skewed portion, which favours the pool).
@@ -201,8 +361,13 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         int256 value = _freeBalance().toInt256();
         for (uint256 i; i < _markets.length; ++i) {
             Market storage m = _markets[i];
-            int256 p = oracle.price(m.oracleId).toInt256();
-            int256 traderPnl = (m.skew * p) / int256(WAD) - m.sumSizeEntry;
+            uint256 p = oracle.price(m.oracleId);
+            // Mark at the close-out price (what closing all skew would fill at), not the bare index.
+            uint256 closeOut = _applyPremium(p, (m.skew * int256(WAD)) / m.skewScale.toInt256() / 2);
+            int256 traderPnl = (m.skew * closeOut.toInt256()) / int256(WAD) - m.sumSizeEntry;
+            // Do not credit trader losses beyond the margin actually held for this market.
+            int256 maxLoss = -m.marginTotal.toInt256();
+            if (traderPnl < maxLoss) traderPnl = maxLoss;
             value -= traderPnl;
         }
         return value > 0 ? uint256(value) : 0;
@@ -223,11 +388,12 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         Market storage m = _market(marketId);
         if (!m.active) revert MarketInactive();
         if (positions[marketId][msg.sender].size != 0) revert PositionExists();
+        if (_isCloseOnly(m)) revert CloseOnly();
         _requireFresh(m);
         _accrueFunding(m);
 
         uint256 indexPrice = oracle.price(m.oracleId);
-        uint256 fill = _fillPrice(m, indexPrice, size);
+        uint256 fill = _fillPrice(m, _openBasePrice(m, indexPrice, size), size);
         if (size > 0 ? fill > acceptablePrice : fill < acceptablePrice) revert SlippageExceeded();
 
         uint256 absSize = _abs(size);
@@ -238,7 +404,8 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         if (notional > netMargin * MAX_LEVERAGE) revert LeverageTooHigh();
 
         int256 newSkew = m.skew + size;
-        if (!_skewWithinCap(m, newSkew, poolValue() + fee)) revert SkewCapExceeded();
+        uint256 protocolCut = (fee * protocolFeeShareBps) / BPS;
+        _checkSkewCaps(m, newSkew, poolValue() + fee - protocolCut);
 
         collateral.safeTransferFrom(msg.sender, address(this), margin);
 
@@ -247,11 +414,15 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         pos.margin = netMargin;
         pos.entryPrice = fill;
         pos.entryFunding = m.fundingIndex;
+        int256 se = (size * fill.toInt256()) / int256(WAD);
+        pos.sizeEntry = se;
 
         m.skew = newSkew;
-        m.sumSizeEntry += (size * fill.toInt256()) / int256(WAD);
+        m.sumSizeEntry += se;
+        protocolFeesAccrued += protocolCut;
         if (size > 0) m.longSize += absSize;
         else m.shortSize += absSize;
+        m.marginTotal += netMargin;
         totalMargin += netMargin; // fee stays in the contract as pool money
 
         if (_isLiquidatable(pos, m, indexPrice)) revert WouldBeLiquidatable();
@@ -260,26 +431,91 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
 
     function closePosition(uint256 marketId, uint256 acceptablePrice) external nonReentrant returns (uint256 payout) {
         Market storage m = _market(marketId);
-        Position memory pos = positions[marketId][msg.sender];
-        if (pos.size == 0) revert NoPosition();
+        if (positions[marketId][msg.sender].size == 0) revert NoPosition();
+        _accrueFunding(m);
+        payout = _close(marketId, msg.sender, m, acceptablePrice);
+    }
+
+    /// @notice Increase or partially reduce an existing position. Reducing to exactly zero closes it.
+    ///         Flipping through zero reverts. Increases use the existing margin (call addMargin
+    ///         first if needed); the fee is taken from margin. Partial closes realize PnL, funding
+    ///         and fee proportionally into margin, which stays on the position.
+    /// @param sizeDelta Signed change in size (same sign as the position = increase).
+    /// @param acceptablePrice Worst fill (max when sizeDelta > 0, min when sizeDelta < 0).
+    function modifyPosition(uint256 marketId, int256 sizeDelta, uint256 acceptablePrice) external nonReentrant {
+        if (sizeDelta == 0) revert ZeroAmount();
+        Market storage m = _market(marketId);
+        Position storage pos = positions[marketId][msg.sender];
+        int256 size = pos.size;
+        if (size == 0) revert NoPosition();
         _accrueFunding(m);
 
-        uint256 indexPrice = oracle.price(m.oracleId);
-        uint256 fill = _fillPrice(m, indexPrice, -pos.size);
-        if (pos.size > 0 ? fill < acceptablePrice : fill > acceptablePrice) revert SlippageExceeded();
-
-        int256 pnl = (pos.size * (fill.toInt256() - pos.entryPrice.toInt256())) / int256(WAD);
-        int256 funding = _fundingOwed(pos, m);
-        uint256 fee = ((_abs(pos.size) * fill) / WAD * tradingFeeBps) / BPS;
-        int256 equity = pos.margin.toInt256() + pnl - funding - fee.toInt256();
-        payout = equity > 0 ? uint256(equity) : 0;
-
-        _removePosition(marketId, msg.sender, pos, m);
-        if (payout > 0) {
-            if (payout > collateral.balanceOf(address(this))) revert InsufficientLiquidity();
-            collateral.safeTransfer(msg.sender, payout);
+        bool increase = (size > 0) == (sizeDelta > 0);
+        if (!increase) {
+            if (_abs(sizeDelta) > _abs(size)) revert FlipNotAllowed();
+            if (_abs(sizeDelta) == _abs(size)) {
+                _close(marketId, msg.sender, m, acceptablePrice);
+                return;
+            }
+        } else {
+            if (!m.active) revert MarketInactive();
+            if (_isCloseOnly(m)) revert CloseOnly();
+            _requireFresh(m);
         }
-        emit PositionClosed(marketId, msg.sender, pos.size, fill, pnl, funding, payout);
+
+        uint256 idx = oracle.price(m.oracleId);
+        uint256 fill = _fillPrice(m, increase ? _openBasePrice(m, idx, sizeDelta) : idx, sizeDelta);
+        if (sizeDelta > 0 ? fill > acceptablePrice : fill < acceptablePrice) revert SlippageExceeded();
+        uint256 fee = ((_abs(sizeDelta) * fill) / WAD * tradingFeeBps) / BPS;
+
+        // Settle accrued funding into margin and realize PnL on the reduced part.
+        int256 funding = _fundingOwed(pos, m);
+        int256 realized;
+        int256 seDelta;
+        if (increase) {
+            seDelta = (sizeDelta * fill.toInt256()) / int256(WAD);
+        } else {
+            seDelta = -((pos.sizeEntry * int256(_abs(sizeDelta))) / int256(_abs(size)));
+            // closed part: (-sizeDelta) * fill - its share of entry notional
+            realized = (-sizeDelta * fill.toInt256()) / int256(WAD) + seDelta;
+            // Realized profit moves from pool cash into margin: it must be backed by pool cash.
+            if (realized > 0 && uint256(realized) > _freeBalance()) revert InsufficientLiquidity();
+        }
+        int256 newMarginSigned = pos.margin.toInt256() + realized - funding - fee.toInt256();
+        if (newMarginSigned <= 0) revert WouldBeLiquidatable();
+        uint256 newMargin = uint256(newMarginSigned);
+
+        int256 newSize = size + sizeDelta;
+        int256 newSkew = m.skew + sizeDelta;
+        uint256 protocolCut = (fee * protocolFeeShareBps) / BPS;
+        if (increase) {
+            if ((_abs(newSize) * fill) / WAD > newMargin * MAX_LEVERAGE) revert LeverageTooHigh();
+            _checkSkewCaps(m, newSkew, poolValue() + fee - protocolCut);
+        }
+
+        totalMargin = totalMargin - pos.margin + newMargin;
+        m.marginTotal = m.marginTotal - pos.margin + newMargin;
+        protocolFeesAccrued += protocolCut;
+        pos.margin = newMargin;
+        pos.size = newSize;
+        pos.sizeEntry += seDelta;
+        pos.entryPrice = uint256((pos.sizeEntry * int256(WAD)) / newSize);
+        pos.entryFunding = m.fundingIndex;
+
+        m.skew = newSkew;
+        m.sumSizeEntry += seDelta;
+        if (sizeDelta > 0) {
+            if (increase) m.longSize += _abs(sizeDelta);
+            else m.shortSize -= _abs(sizeDelta);
+        } else {
+            if (increase) m.shortSize += _abs(sizeDelta);
+            else m.longSize -= _abs(sizeDelta);
+        }
+
+        if (_isLiquidatable(pos, m, idx)) revert WouldBeLiquidatable();
+        emit PositionModified(
+            marketId, msg.sender, sizeDelta, newSize, fill, pos.entryPrice, newMargin, realized, funding, fee
+        );
     }
 
     function addMargin(uint256 marketId, uint256 amount) external nonReentrant {
@@ -289,6 +525,7 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         collateral.safeTransferFrom(msg.sender, address(this), amount);
         pos.margin += amount;
         totalMargin += amount;
+        _markets[marketId].marginTotal += amount;
         emit MarginChanged(marketId, msg.sender, amount.toInt256(), pos.margin);
     }
 
@@ -301,6 +538,7 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         uint256 indexPrice = oracle.price(m.oracleId);
         pos.margin -= amount;
         totalMargin -= amount;
+        m.marginTotal -= amount;
         int256 equity = _equity(pos, m, indexPrice);
         uint256 notional = (_abs(pos.size) * indexPrice) / WAD;
         if (equity <= 0 || notional > uint256(equity) * MAX_LEVERAGE) revert LeverageTooHigh();
@@ -322,10 +560,12 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
 
         int256 equity = _equity(pos, m, indexPrice);
         reward = ((_abs(pos.size) * indexPrice) / WAD * liquidationFeeBps) / BPS;
-        if (equity <= 0) reward = 0;
+        if (equity <= 0) reward = MIN_LIQUIDATION_REWARD;
         else if (reward > uint256(equity)) reward = uint256(equity);
 
         _removePosition(marketId, trader, pos, m);
+        uint256 free = _freeBalance();
+        if (reward > free) reward = free;
         if (reward > 0) collateral.safeTransfer(msg.sender, reward);
         emit Liquidated(marketId, trader, msg.sender, pos.size, indexPrice, reward);
     }
@@ -359,9 +599,45 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         return _fillPrice(m, oracle.price(m.oracleId), size);
     }
 
+    /// @notice Fill price for opening/increasing by `size` (uses the worse of smoothed and target index).
+    function quoteOpenFill(uint256 marketId, int256 size) external view returns (uint256) {
+        Market storage m = _markets[marketId];
+        return _fillPrice(m, _openBasePrice(m, oracle.price(m.oracleId), size), size);
+    }
+
     /// @notice Current funding rate per day (WAD). Positive = longs pay shorts.
     function fundingRatePerDay(uint256 marketId) public view returns (int256) {
         return _fundingRatePerDay(_markets[marketId]);
+    }
+
+    /// @notice True when opening/increasing is blocked ahead of a scheduled index print.
+    function isCloseOnly(uint256 marketId) external view returns (bool) {
+        return _isCloseOnly(_market(marketId));
+    }
+
+    /// @notice Every market with live index, mark, funding rate and close-only state.
+    function getAllMarkets() external view returns (MarketView[] memory out) {
+        out = new MarketView[](_markets.length);
+        for (uint256 i; i < _markets.length; ++i) {
+            Market storage m = _markets[i];
+            MarketView memory v = out[i];
+            uint256 p = oracle.price(m.oracleId);
+            v.marketId = i;
+            v.name = m.name;
+            v.oracleId = m.oracleId;
+            v.active = m.active;
+            v.skewScale = m.skewScale;
+            v.maxFundingRatePerDay = m.maxFundingRatePerDay;
+            v.maxSkewToPoolBps = m.maxSkewToPoolBps;
+            v.skew = m.skew;
+            v.longSize = m.longSize;
+            v.shortSize = m.shortSize;
+            v.indexPrice = p;
+            v.markPrice = _applyPremium(p, (m.skew * int256(WAD)) / m.skewScale.toInt256());
+            v.fundingRatePerDay = _fundingRatePerDay(m);
+            v.closeOnly = _isCloseOnly(m);
+            v.scheduledPrint = oracle.scheduledPrint(m.oracleId);
+        }
     }
 
     struct PositionInfo {
@@ -386,7 +662,7 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         info.margin = pos.margin;
         info.entryPrice = pos.entryPrice;
         info.indexPrice = p;
-        info.pnl = (pos.size * (p.toInt256() - pos.entryPrice.toInt256())) / int256(WAD);
+        info.pnl = (pos.size * p.toInt256()) / int256(WAD) - pos.sizeEntry;
         info.funding = (pos.size * (currentFundingIndex - pos.entryFunding)) / int256(WAD);
         info.equity = pos.margin.toInt256() + info.pnl - info.funding;
         info.liquidatable = info.equity < ((_abs(pos.size) * p) / WAD * maintenanceMarginBps / BPS).toInt256();
@@ -402,13 +678,69 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
         return _markets[marketId];
     }
 
+    function _isCloseOnly(Market storage m) internal view returns (bool) {
+        uint256 t = oracle.scheduledPrint(m.oracleId);
+        return t != 0 && block.timestamp + closeOnlyBefore >= t && block.timestamp <= t + PRINT_GRACE;
+    }
+
+    /// @dev Opens/increases fill against the worse (for the trader) of the smoothed index and the
+    ///      published target, so a known phase-in is not a free option. PnL marking stays smoothed.
+    function _openBasePrice(Market storage m, uint256 smoothed, int256 size) internal view returns (uint256) {
+        uint256 target = oracle.targetPrice(m.oracleId);
+        if (size > 0) return target > smoothed ? target : smoothed;
+        return target < smoothed ? target : smoothed;
+    }
+
+    function _checkSkewCaps(Market storage m, int256 newSkew, uint256 nav) internal view {
+        if (!_skewWithinCap(m, newSkew, nav)) revert SkewCapExceeded();
+        uint256 total;
+        for (uint256 i; i < _markets.length; ++i) {
+            Market storage mi = _markets[i];
+            int256 sk = _sameMarket(mi, m) ? newSkew : mi.skew;
+            total += (_abs(sk) * oracle.price(mi.oracleId)) / WAD;
+        }
+        if (total * BPS > nav * maxTotalSkewToPoolBps) revert SkewCapExceeded();
+    }
+
+    function _sameMarket(Market storage a, Market storage b) internal pure returns (bool r) {
+        assembly {
+            r := eq(a.slot, b.slot)
+        }
+    }
+
+    function _close(uint256 marketId, address trader, Market storage m, uint256 acceptablePrice)
+        internal
+        returns (uint256 payout)
+    {
+        Position memory pos = positions[marketId][trader];
+        uint256 indexPrice_ = oracle.price(m.oracleId);
+        uint256 fill = _fillPrice(m, indexPrice_, -pos.size);
+        if (pos.size > 0 ? fill < acceptablePrice : fill > acceptablePrice) revert SlippageExceeded();
+
+        int256 pnl = (pos.size * fill.toInt256()) / int256(WAD) - pos.sizeEntry;
+        int256 funding = _fundingOwed(pos, m);
+        uint256 fee = ((_abs(pos.size) * fill) / WAD * tradingFeeBps) / BPS;
+        int256 preFee = pos.margin.toInt256() + pnl - funding;
+        uint256 feePaid = preFee <= 0 ? 0 : (uint256(preFee) < fee ? uint256(preFee) : fee);
+        payout = preFee > 0 ? uint256(preFee) - feePaid : 0;
+
+        _removePosition(marketId, trader, pos, m);
+        protocolFeesAccrued += (feePaid * protocolFeeShareBps) / BPS;
+        if (payout > 0) {
+            if (payout > _freeBalance()) revert InsufficientLiquidity();
+            collateral.safeTransfer(trader, payout);
+        }
+        emit PositionClosed(marketId, trader, pos.size, fill, pnl, funding, payout);
+    }
+
     function _requireFresh(Market storage m) internal view {
         if (block.timestamp - oracle.lastUpdate(m.oracleId) > maxOracleAge) revert StaleOracle();
     }
 
     function _freeBalance() internal view returns (uint256) {
         uint256 bal = collateral.balanceOf(address(this));
-        return bal > totalMargin ? bal - totalMargin : 0;
+        uint256 reserved = totalMargin + protocolFeesAccrued;
+        return bal > reserved ? bal - reserved : 0;
     }
 
     function _skewWithinCap(Market storage m, int256 skew, uint256 nav) internal view returns (bool) {
@@ -457,7 +789,7 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
     }
 
     function _equity(Position memory pos, Market storage m, uint256 price) internal view returns (int256) {
-        int256 pnl = (pos.size * (price.toInt256() - pos.entryPrice.toInt256())) / int256(WAD);
+        int256 pnl = (pos.size * price.toInt256()) / int256(WAD) - pos.sizeEntry;
         return pos.margin.toInt256() + pnl - _fundingOwed(pos, m);
     }
 
@@ -480,10 +812,11 @@ contract HousePerpExchange is Ownable, ReentrancyGuard {
 
     function _removePosition(uint256 marketId, address trader, Position memory pos, Market storage m) internal {
         m.skew -= pos.size;
-        m.sumSizeEntry -= (pos.size * pos.entryPrice.toInt256()) / int256(WAD);
+        m.sumSizeEntry -= pos.sizeEntry;
         if (pos.size > 0) m.longSize -= _abs(pos.size);
         else m.shortSize -= _abs(pos.size);
         totalMargin -= pos.margin;
+        m.marginTotal -= pos.margin;
         delete positions[marketId][trader];
     }
 

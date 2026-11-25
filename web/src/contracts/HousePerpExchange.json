@@ -32,6 +32,21 @@
   },
   {
     "inputs": [],
+    "name": "CloseOnly",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ExceedsPending",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "FlipNotAllowed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "InsufficientLiquidity",
     "type": "error"
   },
@@ -79,6 +94,11 @@
   },
   {
     "inputs": [],
+    "name": "PoolInsolvent",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "PositionExists",
     "type": "error"
   },
@@ -122,6 +142,21 @@
   {
     "inputs": [],
     "name": "StaleOracle",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "WithdrawExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "WithdrawLocked",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "WithdrawPending",
     "type": "error"
   },
   {
@@ -306,6 +341,19 @@
     "anonymous": false,
     "inputs": [
       {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "maxTotalSkewToPoolBps",
+        "type": "uint256"
+      }
+    ],
+    "name": "MaxTotalSkewSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
         "indexed": true,
         "internalType": "address",
         "name": "previousOwner",
@@ -319,6 +367,31 @@
       }
     ],
     "name": "OwnershipTransferred",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "closeOnlyBefore",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "withdrawCooldown",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "withdrawWindow",
+        "type": "uint256"
+      }
+    ],
+    "name": "PoolParamsSet",
     "type": "event"
   },
   {
@@ -388,6 +461,73 @@
       {
         "indexed": false,
         "internalType": "int256",
+        "name": "sizeDelta",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "int256",
+        "name": "newSize",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "fillPrice",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newEntryPrice",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newMargin",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "int256",
+        "name": "realizedPnl",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "int256",
+        "name": "fundingSettled",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "fee",
+        "type": "uint256"
+      }
+    ],
+    "name": "PositionModified",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "marketId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "trader",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "int256",
         "name": "size",
         "type": "int256"
       },
@@ -419,6 +559,44 @@
       {
         "indexed": true,
         "internalType": "address",
+        "name": "feeRecipient",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "protocolFeeShareBps",
+        "type": "uint256"
+      }
+    ],
+    "name": "ProtocolFeeSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "ProtocolFeesClaimed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
         "name": "lp",
         "type": "address"
       },
@@ -439,6 +617,50 @@
     "type": "event"
   },
   {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "lp",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      }
+    ],
+    "name": "WithdrawCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "lp",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "unlockTime",
+        "type": "uint256"
+      }
+    ],
+    "name": "WithdrawRequested",
+    "type": "event"
+  },
+  {
     "inputs": [],
     "name": "MAX_LEVERAGE",
     "outputs": [
@@ -454,6 +676,58 @@
   {
     "inputs": [],
     "name": "MAX_MARKETS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MIN_LIQUIDATION_REWARD",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "PRINT_GRACE",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "VIRTUAL_ASSETS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "VIRTUAL_SHARES",
     "outputs": [
       {
         "internalType": "uint256",
@@ -522,6 +796,39 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "cancelWithdraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "claimProtocolFees",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "closeOnlyBefore",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -564,6 +871,11 @@
         "internalType": "uint256",
         "name": "amount",
         "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minSharesOut",
+        "type": "uint256"
       }
     ],
     "name": "deposit",
@@ -575,6 +887,19 @@
       }
     ],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "feeRecipient",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -591,6 +916,96 @@
         "internalType": "int256",
         "name": "",
         "type": "int256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getAllMarkets",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "marketId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "string",
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "oracleId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bool",
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "internalType": "uint256",
+            "name": "skewScale",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "maxFundingRatePerDay",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "maxSkewToPoolBps",
+            "type": "uint256"
+          },
+          {
+            "internalType": "int256",
+            "name": "skew",
+            "type": "int256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "longSize",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "shortSize",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "indexPrice",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "markPrice",
+            "type": "uint256"
+          },
+          {
+            "internalType": "int256",
+            "name": "fundingRatePerDay",
+            "type": "int256"
+          },
+          {
+            "internalType": "bool",
+            "name": "closeOnly",
+            "type": "bool"
+          },
+          {
+            "internalType": "uint256",
+            "name": "scheduledPrint",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct HousePerpExchange.MarketView[]",
+        "name": "out",
+        "type": "tuple[]"
       }
     ],
     "stateMutability": "view",
@@ -667,6 +1082,11 @@
             "internalType": "uint256",
             "name": "shortSize",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "marginTotal",
+            "type": "uint256"
           }
         ],
         "internalType": "struct HousePerpExchange.Market",
@@ -691,6 +1111,25 @@
         "internalType": "uint256",
         "name": "",
         "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "marketId",
+        "type": "uint256"
+      }
+    ],
+    "name": "isCloseOnly",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
       }
     ],
     "stateMutability": "view",
@@ -792,6 +1231,42 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "maxTotalSkewToPoolBps",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "marketId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "int256",
+        "name": "sizeDelta",
+        "type": "int256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "acceptablePrice",
+        "type": "uint256"
+      }
+    ],
+    "name": "modifyPosition",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -840,6 +1315,91 @@
         "internalType": "address",
         "name": "",
         "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "pendingWithdrawShares",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "pendingWithdrawValue",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "lp",
+        "type": "address"
+      }
+    ],
+    "name": "pendingWithdrawal",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "pendingShares",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "unlockTime",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiresAt",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "estimatedAmount",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "poolCash",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -963,6 +1523,37 @@
         "internalType": "int256",
         "name": "entryFunding",
         "type": "int256"
+      },
+      {
+        "internalType": "int256",
+        "name": "sizeEntry",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "protocolFeeShareBps",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "protocolFeesAccrued",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -982,6 +1573,30 @@
       }
     ],
     "name": "quoteFill",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "marketId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "int256",
+        "name": "size",
+        "type": "int256"
+      }
+    ],
+    "name": "quoteOpenFill",
     "outputs": [
       {
         "internalType": "uint256",
@@ -1021,6 +1636,19 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "shareAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "requestWithdraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
         "name": "tradingFeeBps_",
         "type": "uint256"
       },
@@ -1041,6 +1669,60 @@
       }
     ],
     "name": "setFees",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bps",
+        "type": "uint256"
+      }
+    ],
+    "name": "setMaxTotalSkew",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "closeOnlyBefore_",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "withdrawCooldown_",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "withdrawWindow_",
+        "type": "uint256"
+      }
+    ],
+    "name": "setPoolParams",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "shareBps",
+        "type": "uint256"
+      }
+    ],
+    "name": "setProtocolFee",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -1155,6 +1837,11 @@
         "internalType": "uint256",
         "name": "shareAmount",
         "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minAmountOut",
+        "type": "uint256"
       }
     ],
     "name": "withdraw",
@@ -1166,6 +1853,51 @@
       }
     ],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "withdrawCooldown",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "withdrawUnlockTime",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "withdrawWindow",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   }
 ]

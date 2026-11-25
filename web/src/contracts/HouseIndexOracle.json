@@ -53,9 +53,44 @@
     "type": "error"
   },
   {
+    "inputs": [
+      {
+        "internalType": "uint8",
+        "name": "bits",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      }
+    ],
+    "name": "SafeCastOverflowedUintDowncast",
+    "type": "error"
+  },
+  {
     "inputs": [],
     "name": "UnknownFeed",
     "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "id",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "printTimestamp",
+        "type": "uint256"
+      }
+    ],
+    "name": "CloseOnlyScheduled",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -165,6 +200,19 @@
     "type": "event"
   },
   {
+    "inputs": [],
+    "name": "MIN_SMOOTHING_PERIOD",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "bytes32",
@@ -211,6 +259,11 @@
         "internalType": "bool",
         "name": "exists",
         "type": "bool"
+      },
+      {
+        "internalType": "uint64",
+        "name": "period",
+        "type": "uint64"
       }
     ],
     "stateMutability": "view",
@@ -327,6 +380,43 @@
   {
     "inputs": [
       {
+        "internalType": "bytes32",
+        "name": "id",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "timestamp",
+        "type": "uint256"
+      }
+    ],
+    "name": "schedulePrint",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "name": "scheduledPrint",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "address",
         "name": "keeper",
         "type": "address"
@@ -363,6 +453,25 @@
   {
     "inputs": [],
     "name": "smoothingPeriod",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "id",
+        "type": "bytes32"
+      }
+    ],
+    "name": "targetPrice",
     "outputs": [
       {
         "internalType": "uint256",
