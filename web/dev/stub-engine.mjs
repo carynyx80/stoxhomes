@@ -199,7 +199,8 @@ const routes = {
       { key: "capital", label: "Capital in wallet", done: onchain > 0, detail: `$${onchain.toLocaleString()} USDC + USDT`, next: "Send USDC or USDT to the company wallet." },
       { key: "vault", label: "Vault seeded", done: vault.value > 0, detail: `Vault value $${Math.round(vault.value).toLocaleString()}`, next: "Seed the vault with the Seed vault form below." },
     ];
-    return { setup, tradingOpen: TRADING_OPEN, companyOnChain: { USDC: s(cw.USDC), USDT: s(cw.USDT), total: s(onchain) }, companySol: s(cw.sol, 9), unattributedDeposits: unattributed.filter((d) => !d.resolved), companyUsdtOnChain: s(onchain), liabilities: { users: s(usersL), vault: s(vault.value), protocolFees: s(protocolFees) }, surplus: s(onchain - usersL - vault.value - protocolFees), pendingWithdrawals: { count: pend.length, amount: s(pend.reduce((t, w) => t + w.amount, 0)) } };
+    const setupObj = { solOk: cw.sol >= 0.01, sol: cw.sol, minSol: 0.01, capitalOk: onchain > 0, companyOnChain: s(onchain), liabilities: s(vault.value), vaultSeeded: vault.value > 0, vaultValue: s(vault.value) };
+    return { setup: setupObj, setupList: setup, tradingOpen: TRADING_OPEN, companyOnChain: { USDC: s(cw.USDC), USDT: s(cw.USDT), total: s(onchain) }, companySol: s(cw.sol, 9), unattributedDeposits: unattributed.filter((d) => !d.resolved), companyUsdtOnChain: s(onchain), liabilities: { users: s(usersL), vault: s(vault.value), protocolFees: s(protocolFees) }, surplus: s(onchain - usersL - vault.value - protocolFees), pendingWithdrawals: { count: pend.length, amount: s(pend.reduce((t, w) => t + w.amount, 0)) } };
   },
   "GET /admin/withdrawals": ({ q }) => withdrawals.filter((w) => !q.status || w.status === q.status).map(wView),
   "GET /admin/deposits": ({ q }) => unattributed.filter((d) => (q.status || "unattributed") === "unattributed" ? !d.resolved : true),

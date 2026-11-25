@@ -119,7 +119,14 @@ function SetupChecklist({ ex }) {
   useEffect(() => { let stop = false; ex.admin?.call("/admin/overview").then((o) => { if (!stop) setOv(o); }).catch(() => {}); return () => { stop = true; }; }, [ex.isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
   const raw = ov?.setup || ov?.checklist || ov?.setupChecklist;
   if (!raw) return null;
-  const items = Array.isArray(raw) ? raw : Object.entries(raw).map(([k, v]) => (typeof v === "object" ? { key: k, ...v } : { key: k, done: !!v }));
+  const money = (v) => "$" + Number(v || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const items = Array.isArray(raw) ? raw
+    : "solOk" in raw || "vaultSeeded" in raw ? [ // engine shape: { solOk, sol, minSol, capitalOk, companyOnChain, liabilities, vaultSeeded, vaultValue }
+      { key: "sol", label: "SOL for fees", done: !!raw.solOk, detail: `${Number(raw.sol || 0).toFixed(4)} SOL in the company wallet (minimum ${raw.minSol ?? 0.01})`, next: `Send at least ${raw.minSol ?? 0.01} SOL to the company wallet for fees and account rent.` },
+      { key: "capital", label: "Capital in wallet", done: !!raw.capitalOk, detail: `${money(raw.companyOnChain)} USDC + USDT on chain, liabilities ${money(raw.liabilities)}`, next: "Send USDC or USDT to the company wallet so it covers liabilities and the vault seed." },
+      { key: "vault", label: "Vault seeded", done: !!raw.vaultSeeded, detail: `Vault value ${money(raw.vaultValue)}`, next: "Seed the vault with the Seed vault form below. Real trading opens once the vault has value." },
+    ]
+    : Object.entries(raw).map(([k, v]) => (typeof v === "object" ? { key: k, ...v } : { key: k, done: !!v }));
   const firstOpen = items.find((x) => !(x.done ?? x.ok ?? x.complete));
   return (
     <section className="panel setup">

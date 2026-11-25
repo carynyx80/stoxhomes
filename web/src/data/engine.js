@@ -140,9 +140,12 @@ export function useEngineExchange() {
       const c = cfgs[MODE] || (await call("/config"));
       if (!cfgs[MODE]) setCfg(c);
       const ids = c.markets.map((m) => m.id);
-      const [markets, vault, stats, ...tapes] = await Promise.all([
-        call("/markets"), soft(call("/vault")), soft(call("/stats")), ...ids.map((i) => soft(call(`/markets/${i}/trades?limit=15`))),
+      const [markets0, vault, stats, realMarkets, ...tapes] = await Promise.all([
+        call("/markets"), soft(call("/vault")), soft(call("/stats")),
+        MODE === "practice" ? soft(call("/markets", { root: true })) : null, // practice rows may lack change1y: borrow it from the real feed
+        ...ids.map((i) => soft(call(`/markets/${i}/trades?limit=15`))),
       ]);
+      const markets = realMarkets ? markets0.map((m) => (m.change1y != null ? m : { ...m, change1y: realMarkets.find((r) => r.id === m.id)?.change1y ?? null })) : markets0;
       setPub({ markets, vault, stats, tapes, at: Date.now() });
       setError(null);
     } catch (e) { setError(e.message); }
@@ -153,7 +156,7 @@ export function useEngineExchange() {
     try {
       const [m, positions, history, deposits, withdrawals] = await Promise.all([
         call("/me", { token }), call("/me/positions", { token }), soft(call("/me/history", { token })),
-        soft(call("/me/deposits", { token })), soft(call("/me/withdrawals", { token })),
+        MODE === "practice" ? [] : soft(call("/me/deposits", { token })), MODE === "practice" ? [] : soft(call("/me/withdrawals", { token })),
       ]);
       setMe({ me: m, positions, history, deposits: deposits || [], withdrawals: withdrawals || [], token });
     } catch (e) { if (e.code === "UNAUTHORIZED") { expire(); push({ kind: "info", text: ERRORS.UNAUTHORIZED }); } }
@@ -174,7 +177,7 @@ export function useEngineExchange() {
       try { ws = new WebSocket(ENGINE.replace(/^http/, "ws") + (mode === "practice" ? "/practice/ws" : "/ws") + (token ? `?token=${encodeURIComponent(token)}` : "")); } catch { return; }
       ws.onmessage = (ev) => {
         let m; try { m = JSON.parse(ev.data); } catch { return; }
-        if (m.type === "markets" && Array.isArray(m.data)) setPub((p) => (p ? { ...p, markets: m.data } : p));
+        if (m.type === "markets" && Array.isArray(m.data)) setPub((p) => (p ? { ...p, markets: m.data.map((x) => (x.change1y != null ? x : { ...x, change1y: p.markets.find((y) => y.id === x.id)?.change1y ?? null })) } : p));
         else if (m.type === "trade") loadPublic();
         else if (["me", "deposit", "withdrawal"].includes(m.type)) loadMe();
       };
@@ -232,6 +235,11 @@ export function useEngineExchange() {
     faucet: async () => {
       if (!account) { wcRaw.openPicker(); return false; }
       if (!token) return signIn();
+      const ms = (x) => Number(x) * (Number(x) < 1e12 ? 1000 : 1);
+      if (faucetNext && ms(faucetNext) > Date.now()) { // known cooldown: no request
+        push({ kind: "info", text: `Practice funds already claimed. Next refill: ${new Date(ms(faucetNext)).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })}.` });
+        return false;
+      }
       setBusy("faucet");
       try {
         const r = await call("/faucet", { method: "POST", token });
