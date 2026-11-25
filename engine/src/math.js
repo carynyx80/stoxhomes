@@ -10,7 +10,7 @@ export const PARAMS = Object.freeze({
   maxLeverage: 100n,
   maxSkewToPoolBps: 30_000n, // 3x per market
   maxTotalSkewToPoolBps: 50_000n, // 5x global
-  skewScale: 1_000_000n * WAD,
+  skewScale: 150_000n * WAD, // default; engines take SKEW_SCALE from config
   maxFundingRatePerDay: WAD / 1000n, // 0.1%/day
   smoothingPeriod: 7n * 86400n,
   maxPrintMoveBps: 1_000n, // 10%

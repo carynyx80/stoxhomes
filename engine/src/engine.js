@@ -40,8 +40,10 @@ function ratioStr(num, den, decimals = 6) {
 }
 
 export class Engine extends EventEmitter {
-  constructor({ db, companyAddress, now }) {
+  constructor({ db, companyAddress, now, skewScale, practice = false }) {
     super();
+    this.skewScale = skewScale || P.skewScale;
+    this.practice = practice;
     this.db = db;
     this.company = companyAddress; // already normalized by the chain config (EVM lowercase, Solana base58)
     this.now = now || (() => Math.floor(Date.now() / 1000));
@@ -99,9 +101,18 @@ export class Engine extends EventEmitter {
         VALUES (?, ?, ?, 1, ?, ?, ?, '0', '0', '0', '0', ?, '0', '0', 0, ?, ?, ?, ?, 0)`);
       for (const mk of MARKETS) {
         const p = wadFromDecimal(mk.start).toString();
-        const r = ins.run(mk.id, mk.symbol, mk.name, P.skewScale.toString(), P.maxFundingRatePerDay.toString(), P.maxSkewToPoolBps, now, p, p, now, P.smoothingPeriod);
+        const r = ins.run(mk.id, mk.symbol, mk.name, this.skewScale.toString(), P.maxFundingRatePerDay.toString(), P.maxSkewToPoolBps, now, p, p, now, P.smoothingPeriod);
         if (r.changes) this.s.insPrint.run(mk.id, p, 'genesis', now);
       }
+      // Migration: existing market rows follow the configured skew scale (accrue funding at the old scale first).
+      for (const m of this.loadMarkets()) {
+        if (m.skewScale !== this.skewScale) {
+          this._accrue(m, now);
+          this._saveMarket(m);
+          this.db.prepare('UPDATE markets SET skew_scale = ? WHERE id = ?').run(this.skewScale.toString(), m.id);
+        }
+      }
+      this.db.exec('CREATE TABLE IF NOT EXISTS faucet_claims (address TEXT PRIMARY KEY, last_at INTEGER NOT NULL)');
     });
     return this;
   }
@@ -997,9 +1008,9 @@ export class Engine extends EventEmitter {
 
   history(marketId, range = '1M') {
     const m = this.resolveMarket(marketId);
-    const days = { '1M': 30, '6M': 182, '1Y': 365, '5Y': 1826 }[range];
-    if (!days) throw new AppError('BAD_INPUT', 'range must be 1M, 6M, 1Y or 5Y');
-    const since = this.now() - days * 86400;
+    const days = { '1M': 30, '6M': 182, '1Y': 365, '5Y': 1826, ALL: Infinity }[range];
+    if (!days) throw new AppError('BAD_INPUT', 'range must be 1M, 6M, 1Y, 5Y or ALL');
+    const since = days === Infinity ? -1e15 : this.now() - days * 86400;
     const prints = this.db.prepare('SELECT value, at FROM prints WHERE market_id = ? AND at >= ? ORDER BY at').all(m.id, since)
       .map((r) => ({ at: n(r.at), value: fmtWad(B(r.value)) }));
     let snaps = this.db.prepare('SELECT * FROM snapshots WHERE market_id = ? AND at >= ? ORDER BY at').all(m.id, since);
@@ -1055,6 +1066,43 @@ export class Engine extends EventEmitter {
         this.s.insSnap.run(m.id, now, idx.toString(), M.markPrice(idx, m.skew, m.skewScale).toString(),
           M.fundingRatePerDay(m.skew, m.skewScale, m.maxFunding).toString(), m.longSize.toString(), m.shortSize.toString());
       }
+    });
+  }
+
+  /** Practice: copy the index feeds (and print history) from the real engine so both show identical prices. */
+  mirrorFeedsFrom(src) {
+    return this.tx(() => {
+      const now = this.now();
+      const markets = this.accrueAll();
+      for (const s of src.loadMarkets()) {
+        const m = markets.find((x) => x.id === s.id);
+        if (!m) continue;
+        this._accrue(m, now);
+        Object.assign(m, { fromPrice: s.fromPrice, toPrice: s.toPrice, updatedAt: s.updatedAt, period: s.period, scheduledPrint: s.scheduledPrint });
+        this._saveMarket(m);
+      }
+      this.db.prepare('DELETE FROM prints').run();
+      const ins = this.db.prepare('INSERT INTO prints (id, market_id, value, source, at) VALUES (?, ?, ?, ?, ?)');
+      for (const p of src.db.prepare('SELECT * FROM prints ORDER BY id').all()) ins.run(p.id, p.market_id, p.value, p.source, p.at);
+    });
+  }
+
+  /** Practice faucet: credit practice USD from company equity, at most once per 24h per address. */
+  faucet(address, amount = 10_000_000_000n) {
+    if (!this.practice) throw new AppError('NOT_PRACTICE', 'The faucet only exists in practice mode');
+    return this.tx(() => {
+      const now = this.now();
+      const r = this.db.prepare('SELECT last_at FROM faucet_claims WHERE address = ?').get(address);
+      if (r && now - Number(r.last_at) < 86400) {
+        const e = new AppError('FAUCET_COOLDOWN', 'You can claim practice funds once every 24 hours', 429);
+        e.extra = { nextAt: Number(r.last_at) + 86400 };
+        throw e;
+      }
+      this.ensureUser(address);
+      this.post([[acct.equity, -amount], [acct.available(address), amount]], `faucet:${address}:${now}`);
+      this.db.prepare('INSERT INTO faucet_claims (address, last_at) VALUES (?, ?) ON CONFLICT(address) DO UPDATE SET last_at = excluded.last_at').run(address, now);
+      this._emit('me', address);
+      return { amount, nextAt: now + 86400 };
     });
   }
 

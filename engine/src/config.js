@@ -1,4 +1,4 @@
-import { parseUsdt } from './fixed.js';
+import { parseUsdt, parseWad } from './fixed.js';
 import { MINTS, normSolAddress } from './solana.js';
 
 function req(env, k) {
@@ -31,9 +31,24 @@ function common(env) {
     rateLimitAddrPerMin: Number(env.RATE_LIMIT_ADDR_PER_MIN || 60),
     trustProxy: env.TRUST_PROXY !== '0',
     watcherEnabled: env.WATCHER !== '0',
+    ...shared(env, prod),
   };
   if (!cfg.sessionSecret || cfg.sessionSecret.length < 16) throw new Error('SESSION_SECRET is required (>= 16 chars)');
   return cfg;
+}
+
+/** Settings common to both chains: skew scale and practice mode. */
+function shared(env, prod) {
+  const skewScale = parseWad(env.SKEW_SCALE || '150000', 'SKEW_SCALE');
+  if (skewScale <= 0n) throw new Error('SKEW_SCALE must be positive');
+  const dbPath = env.DB_PATH || (prod ? '/data/engine.db' : './engine.db');
+  return {
+    skewScale,
+    practiceEnabled: env.PRACTICE !== '0',
+    practiceDbPath: env.PRACTICE_DB_PATH || (prod ? '/data/practice.db' : dbPath.replace(/(\.db)?$/, '.practice.db')),
+    practiceSeed: parseUsdt(env.PRACTICE_VAULT_SEED || '10000000', 'PRACTICE_VAULT_SEED'),
+    faucetAmount: parseUsdt(env.PRACTICE_FAUCET || '10000', 'PRACTICE_FAUCET'),
+  };
 }
 
 const B58 = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/;
@@ -91,6 +106,7 @@ function loadEvmConfig(env) {
     rateLimitAddrPerMin: Number(env.RATE_LIMIT_ADDR_PER_MIN || 60),
     trustProxy: env.TRUST_PROXY !== '0',
     watcherEnabled: env.WATCHER !== '0',
+    ...shared(env, prod),
   };
   if (!cfg.sessionSecret || cfg.sessionSecret.length < 16) throw new Error('SESSION_SECRET is required (>= 16 chars)');
   if (prod && cfg.startBlock === null) throw new Error('START_BLOCK is required in production');

@@ -21,10 +21,10 @@ export const U = (x) => {
 export const DAY = 86400;
 export const COMPANY = '0x106342ec570e207afda9fda63125d7a9071127f2';
 
-export function makeEngine({ start = 1_788_000_000 } = {}) {
+export function makeEngine({ start = 1_788_000_000, skewScale = 1_000_000n * WAD } = {}) {
   const clock = { t: start };
   const db = openDb(':memory:');
-  const engine = new Engine({ db, companyAddress: COMPANY, now: () => clock.t }).init();
+  const engine = new Engine({ db, companyAddress: COMPANY, now: () => clock.t, skewScale }).init();
   const h = {
     engine, db, clock,
     advance(sec) { clock.t += sec; },

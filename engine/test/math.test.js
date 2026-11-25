@@ -5,7 +5,7 @@ import { WAD, floorDiv, ceilDiv, parseUsdt, parseSignedWad, fmtUsdt, fmtWad, not
 import { E, U, DAY } from './helpers.js';
 import { AppError } from '../src/fixed.js';
 
-const S = M.PARAMS.skewScale;
+const S = 1_000_000n * WAD; // contract-test scale; the math is scale-agnostic
 
 test('fixed: parse/format round trip and strictness', () => {
   assert.equal(parseUsdt('1250.5'), 1_250_500_000n);
