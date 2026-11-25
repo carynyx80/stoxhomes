@@ -84,6 +84,7 @@ export function WalletPicker({ wc }) {
   useEffect(() => { const k = (e) => e.key === "Escape" && wc.closePicker(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [wc]);
   const busy = wc.pending === "connect";
   const none = wc.wallets.length === 0;
+  const searching = none && wc.detecting;
   const mobile = isMobile();
   return (
     <div className="sheet-bg" onClick={wc.closePicker}>
@@ -110,13 +111,17 @@ export function WalletPicker({ wc }) {
             ))}
           </ul>
         )}
-        {list && none && !mobile && (
+        {list && searching && <p className="sheet-note wsearch" style={{ display: "flex", alignItems: "center", gap: 10 }}><i className="spin" /> Looking for Solana wallets…</p>}
+        {list && none && !searching && wc.evmOnly && (
+          <div className="warnbox"><b>Stoxhome runs on Solana.</b> Your browser has an Ethereum wallet (like MetaMask), which can't connect here — install or open Phantom, Solflare or Backpack.</div>
+        )}
+        {list && none && !searching && !mobile && (
           <>
             <p className="sheet-note">No browser wallet detected. Install one, then reload this page.</p>
             <ul className="wlist">{(wc.kind === "solana" ? SOL_INSTALL : INSTALL).map((w) => <li key={w.name}><a href={w.url} target="_blank" rel="noreferrer"><WIcon w={w} /><span>{w.name}</span><em>Install ↗</em></a></li>)}</ul>
           </>
         )}
-        {list && none && mobile && (
+        {list && none && !searching && mobile && (
           <>
             <p className="sheet-note">Open Stoxhome inside your wallet app's browser to connect.</p>
             <ul className="wlist">{(wc.kind === "solana" ? solDeepLinks() : deepLinks()).map((w) => <li key={w.name}><a href={w.url}><WIcon w={w} /><span>Open in {w.name}</span><em>↗</em></a></li>)}</ul>
@@ -132,4 +137,30 @@ function WIcon({ w }) {
   const src = w?.icon || logoFor(w?.name);
   if (src) return <img className="wicon" src={src} alt="" width="28" height="28" />;
   return <span className="wicon mono" aria-hidden="true">{(w?.name || "?").replace(/ wallet/i, "").slice(0, 2)}</span>;
+}
+
+const shortA = (a) => (a ? a.slice(0, 4) + "…" + a.slice(-4) : "");
+const money = (v) => "$" + Number(v || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** Header connect control for the app shell: Connect → Sign in → balance + address. Always responds. */
+export function ConnectButton({ ex, onFunds, className = "" }) {
+  const wc = ex.wc;
+  if (!wc) return null;
+  if (!ex.wallet?.connected) {
+    return <button className={"wallet " + className} disabled={wc.pending === "connect"} onClick={() => wc.openPicker()}>{wc.pending === "connect" ? "Connecting…" : "Connect wallet"}</button>;
+  }
+  if (!ex.wallet.signedIn) {
+    return (
+      <span className={"connect-group " + className} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <button className="faucet" title={ex.wallet.full} onClick={() => wc.openPicker()}>{shortA(ex.wallet.full)}</button>
+        <button className="wallet" disabled={ex.signing} onClick={() => ex.actions.signIn()}>{ex.signing ? "Check your wallet…" : "Sign in"}</button>
+      </span>
+    );
+  }
+  return (
+    <span className={"connect-group " + className} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <button className="faucet balbtn" onClick={() => onFunds?.("deposit")} title="Deposit or withdraw">{money(ex.wallet.balance)} <small>available</small></button>
+      <button className="wallet" title={ex.wallet.full} onClick={() => wc.openPicker()}>{shortA(ex.wallet.full)}</button>
+    </span>
+  );
 }

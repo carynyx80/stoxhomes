@@ -14,6 +14,8 @@ import { API } from "./data/live.js";
 import Skyline from "./ui/Skyline.jsx";
 import Chart from "./ui/Chart.jsx";
 import { LogoMark } from "./ui/Logo.jsx";
+import Landing from "./ui/Landing.jsx";
+import AppShell from "./ui/AppShell.jsx";
 
 const usd = (v, d = 0) => "$" + v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 const compact = (v) => "$" + Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(v);
@@ -53,10 +55,214 @@ function printState(m, now) {
   return { kind: "open", left: m.nextPrintAt - now };
 }
 
+const routeOf = () => {
+  const p = window.location.pathname.replace(/\/+$/, "");
+  return p === "/admin" ? "admin" : p === "/app" ? "app" : "home";
+};
+
 export default function App() {
   const ex = useExchange();
+  const [route, setRoute] = useState(routeOf);
+  useEffect(() => {
+    const on = () => setRoute(routeOf());
+    window.addEventListener("popstate", on);
+    return () => window.removeEventListener("popstate", on);
+  }, []);
+  const nav = (path) => { history.pushState(null, "", path); setRoute(routeOf()); window.scrollTo(0, 0); };
+  if (route === "home") return <Landing ex={ex} enter={(hash) => nav("/app#" + (hash || "trade"))} />;
   if (!ex.ready) return <Boot error={ex.error} />;
+  if (route === "app") return <SlideDesk ex={ex} nav={nav} />;
   return <Desk ex={ex} admin={isAdminRoute()} />;
+}
+
+function TopBar({ ex, setFunds, onHome }) {
+  return (
+    <header className="top">
+      <a className="brand" href="/" onClick={(e) => { e.preventDefault(); onHome(); }}><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></a>
+      <div className="top-r">
+        <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : ENGINE_MODE ? (ex.error ? "Offline" : "Live") : chain.name}</span>
+        <WalletButtons ex={ex} setFunds={setFunds} />
+      </div>
+    </header>
+  );
+}
+
+function WalletButtons({ ex, setFunds }) {
+  return <>
+    {!ENGINE_MODE && ex.faucet && ex.wallet.connected && <button className="faucet" disabled={!!ex.busy} onClick={() => ex.actions.faucet()}>{ex.busy === "faucet" ? "Funding…" : "Get test USDT"}</button>}
+    {ex.wc?.wrongChain && <button className="wallet warn" disabled={ex.wc.pending === "switch"} onClick={() => ex.wc.switchChain()}>{ex.wc.pending === "switch" ? "Switching…" : "Wrong network"}</button>}
+    {ENGINE_MODE && ex.wallet.connected && !ex.wallet.signedIn
+      ? <>
+          <button className="faucet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{ex.wallet.address}</button>
+          <button className="wallet" disabled={ex.signing} onClick={() => ex.actions.signIn()}>{ex.signing ? "Check your wallet…" : "Sign in"}</button>
+        </>
+      : ENGINE_MODE && ex.wallet.connected
+        ? <>
+            <button className="faucet balbtn" onClick={() => setFunds("deposit")} title="Deposit or withdraw">{usd(ex.wallet.balance, 2)} <small>available</small></button>
+            <button className="wallet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{ex.wallet.address}</button>
+          </>
+        : ex.wallet.connected
+          ? <button className="wallet" title={ex.wallet.full} onClick={() => ex.wc?.openPicker()}>{usd(ex.wallet.balance)} · {ex.wallet.address}</button>
+          : <button className="wallet" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet"}</button>}
+  </>;
+}
+
+function Cities({ ex, sel, setSel, now }) {
+  return (
+    <section className="cities" aria-label="Markets">
+      {ex.markets.map((c, i) => (
+        <button key={c.symbol} className={"city" + (i === sel ? " on" : "")} onClick={() => setSel(i)}>
+          <Skyline symbol={c.symbol} seed={i + 1} />
+          <PrintBadge ps={printState(c, now)} />
+          <div className="city-meta">
+            <span className="sym">{c.symbol}</span>
+            <span className="cpx">{c.index.toFixed(2)}</span>
+            <span className="cname">{c.city}</span>
+            {c.change1y != null
+              ? <span className={"cchg " + (c.change1y >= 0 ? "up" : "dn")}>{pctS(c.change1y, 1)} 1Y</span>
+              : <span className={"cchg " + (c.change24h >= 0 ? "up" : "dn")}>{pctS(c.change24h, 2)} 24h</span>}
+          </div>
+        </button>
+      ))}
+    </section>
+  );
+}
+
+function ChartPanel({ ex, m, now }) {
+  const [range, setRange] = useState("1Y");
+  const histRaw = useHistorySeries(m, range, now, Math.floor(now / 30000) + ":" + ex.trades.length);
+  const hist = histRaw && histRaw.length > 1 ? histRaw : [{ t: now - 86400000, index: m.index, mark: m.mark }, { t: now, index: m.index, mark: m.mark }];
+  const rangeChg = hist[hist.length - 1].index / hist[0].index - 1;
+  const pos = ex.positions.find((p) => p.marketId === m.id);
+  const posKey = pos ? pos.entryPrice.toFixed(2) + pos.liquidationPrice.toFixed(1) : "";
+  const lines = useMemo(() => pos ? [
+    { kind: "entry", v: pos.entryPrice, label: `ENTRY ${pos.side.toUpperCase()} ${pos.entryPrice.toFixed(2)}` },
+    { kind: "liq", v: pos.liquidationPrice, label: `LIQ ${pos.liquidationPrice.toFixed(2)}` },
+  ] : [], [m.id, posKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <section className="panel chartpanel">
+      <div className="ch-head">
+        <div>
+          <p className="eyebrow">{m.coords} · {m.name}</p>
+          <h2>{m.city} <span>Home Price Index</span></h2>
+          <div className="px">
+            <b>{m.index.toFixed(2)}</b>
+            <span className={rangeChg >= 0 ? "up" : "dn"}>{pctS(rangeChg)} <small>{range}</small></span>
+          </div>
+        </div>
+        <div className="ch-side">
+          <div className="tabs">{["1M", "6M", "1Y", "5Y"].map((r) => <button key={r} className={r === range ? "on" : ""} onClick={() => setRange(r)}>{r}</button>)}</div>
+          <div className="legend"><span><i className="lg-i" />Index</span><span><i className="lg-m" />Mark</span></div>
+        </div>
+      </div>
+      <PrintBanner ps={printState(m, now)} />
+      <Chart data={hist} range={range} symbol={m.symbol} lines={lines} />
+      <div className="facts">
+        <Fact k="Mark" v={m.mark.toFixed(2)} />
+        <Fact k="Premium" v={pctS(m.mark / m.index - 1, 3)} />
+        <Fact k="Funding / day" v={pctS(m.funding, 4)} cls={m.funding >= 0 ? "dn" : "up"} />
+        <Fact k="24h volume" v={compact(m.volume24h)} />
+        <SkewBar m={m} />
+      </div>
+    </section>
+  );
+}
+
+function SlideHead({ n, title, em, sub }) {
+  return <div className="slide-head"><p className="eyebrow">{n} · {sub}</p><h2>{title} <em>{em}</em></h2></div>;
+}
+
+function SlideDesk({ ex, nav }) {
+  const now = useNow() + (ex.clockOffset || 0);
+  const [funds, setFunds] = useState(null);
+  const [sel, setSel] = useState(0);
+  const [sheet, setSheet] = useState(null);
+  const m = ex.markets[sel] || ex.markets[0];
+  const pick = (i) => { setSel(i); history.replaceState(null, "", "/app#trade"); window.dispatchEvent(new HashChangeEvent("hashchange")); };
+  const equity = ex.positions.reduce((a, p) => a + p.equity, 0);
+  const upnl = ex.positions.reduce((a, p) => a + p.pnl, 0);
+  const slides = [
+    { id: "trade", label: "Trade", render: () => <>
+      <Cities ex={ex} sel={sel} setSel={setSel} now={now} />
+      <main className="desk"><ChartPanel ex={ex} m={m} now={now} /><Ticket m={m} ex={ex} ps={printState(m, now)} openFunds={setFunds} /></main>
+      <div className="row-one"><Positions ex={ex} setSheet={setSheet} /></div>
+    </> },
+    { id: "markets", label: "Markets", render: () => <>
+      <SlideHead n="02" sub="Five cities · monthly index prints" title="Markets," em="at a glance." />
+      <dl className="stats wide">
+        <div><dt>Total value locked</dt><dd>{compact(ex.stats.tvl)}</dd></div>
+        <div><dt>24h volume</dt><dd>{compact(ex.stats.volume24h)}</dd></div>
+        <div><dt>Open interest</dt><dd>{compact(ex.stats.oi)}</dd></div>
+        <div><dt>Vault APR</dt><dd>{ex.pool.apr == null ? "—" : (ex.pool.apr * 100).toFixed(1) + "%"}</dd></div>
+      </dl>
+      <div className="mkt-list">
+        {ex.markets.map((c, i) => (
+          <button key={c.symbol} className="mkt-row" onClick={() => pick(i)}>
+            <Skyline symbol={c.symbol} seed={i + 1} />
+            <span className="mr-name"><b>{c.symbol}</b><small>{c.city} · {c.name}</small></span>
+            <span className="mr-k"><small>Index</small>{c.index.toFixed(2)}</span>
+            <span className="mr-k"><small>Mark</small>{c.mark.toFixed(2)}</span>
+            <span className={"mr-k " + (c.change24h >= 0 ? "up" : "dn")}><small>24h</small>{pctS(c.change24h, 2)}</span>
+            <span className={"mr-k " + (c.funding >= 0 ? "dn" : "up")}><small>Funding/d</small>{pctS(c.funding, 4)}</span>
+            <span className="mr-k"><small>24h vol</small>{compact(c.volume24h)}</span>
+            <PrintBadge ps={printState(c, now)} />
+            <span className="mr-go">Trade →</span>
+          </button>
+        ))}
+      </div>
+    </> },
+    { id: "vault", label: "Vault", render: () => <>
+      <SlideHead n="03" sub="Liquidity vault" title="Be the" em="house." />
+      <Vault ex={ex} pool={ex.pool} now={now} cooldown={ex.params.withdrawCooldown} setSheet={setSheet} />
+    </> },
+    { id: "funding", label: "Funding", render: () => <>
+      <SlideHead n="04" sub="Funding & print calendar" title="Who pays" em="whom." />
+      <Funding markets={ex.markets} now={now} live={ex.live} />
+    </> },
+    { id: "tape", label: "Activity", render: () => <>
+      <SlideHead n="05" sub="Live tape" title="Every fill," em="as it lands." />
+      <Tape trades={ex.trades} />
+    </> },
+    { id: "portfolio", label: "Portfolio", render: () => <>
+      <SlideHead n="06" sub="Your account" title="Your" em="portfolio." />
+      <dl className="stats wide">
+        <div><dt>Available balance</dt><dd>{ex.wallet.connected ? usd(ex.wallet.balance, 2) : "—"}</dd></div>
+        <div><dt>Position equity</dt><dd>{usd(equity)}</dd></div>
+        <div><dt>Unrealised PnL</dt><dd className={upnl >= 0 ? "up" : "dn"}>{(upnl >= 0 ? "+" : "−") + usd(Math.abs(upnl))}</dd></div>
+        <div><dt>Open positions</dt><dd>{ex.positions.length}</dd></div>
+      </dl>
+      <div className="pf-funds panel">
+        <div><p className="eyebrow">Deposits &amp; withdrawals <Custody /></p><p className="pf-note">Deposit USDC or USDT on Solana. Withdrawals are reviewed and paid from the treasury wallet.</p></div>
+        <div className="pf-btns">
+          {!ex.wallet.connected
+            ? <button className="go long" onClick={() => ex.actions.connect()}>Connect wallet</button>
+            : ENGINE_MODE && !ex.wallet.signedIn
+              ? <button className="go long" disabled={ex.signing} onClick={() => ex.actions.signIn()}>{ex.signing ? "Check your wallet…" : "Sign in"}</button>
+              : <><button className="go long" onClick={() => (ENGINE_MODE ? setFunds("deposit") : setSheet({ type: "deposit" }))}>Deposit</button>
+                  <button className="ghost" onClick={() => (ENGINE_MODE ? setFunds("withdraw") : setSheet({ type: "requestWithdraw" }))}>Withdraw</button></>}
+        </div>
+      </div>
+      <div className="row-one"><Positions ex={ex} setSheet={setSheet} /></div>
+      <section className="panel pf-hist">
+        <div className="sec-head"><h3>Trade history</h3><span className="sub">{ex.history.length} fills</span></div>
+        {ex.history.length ? <History rows={ex.history} /> : <div className="empty"><b>No trades yet.</b><span>Your opens, modifies and closes appear here.</span></div>}
+      </section>
+    </> },
+  ];
+  if (ex.isAdmin) slides.push({ id: "admin", label: "Admin", render: () => <AdminPage ex={ex} /> });
+
+  return (
+    <AppShell slides={slides} header={<>
+      <TopBar ex={ex} setFunds={setFunds} onHome={() => nav("/")} />
+      {ex.error && <div className="errbar">{ex.error}</div>}
+      <Ticker markets={ex.markets} />
+    </>}>
+      {sheet && <Sheet sheet={sheet} ex={ex} onClose={() => setSheet(null)} />}
+      {funds && ex.wallet.signedIn && <FundsSheet ex={ex} tab={funds} onClose={() => setFunds(null)} />}
+      {ex.wc?.pickerOpen && <WalletPicker wc={ex.wc} />}
+      <Toasts toasts={ex.toasts} dismiss={ex.dismiss} explorer={ENGINE_MODE ? ex.explorer : chain.explorer} />
+    </AppShell>
+  );
 }
 
 function Boot({ error }) {
@@ -97,7 +303,7 @@ function Desk({ ex, admin }) {
       <header className="top">
         <div className="brand"><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></div>
         {admin
-          ? <nav><a href="/">Trade</a><a className="on" href="/admin">Admin</a></nav>
+          ? <nav><a href="/app">Trade</a><a className="on" href="/admin">Admin</a></nav>
           : <nav><a className="on">Trade</a><a href="#vault">Vault</a><a href="#funding">Funding</a><a href="#tape">Tape</a>{ex.isAdmin && <a href="/admin">Admin</a>}</nav>}
         <div className="top-r">
           <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : ENGINE_MODE ? (ex.error ? "Offline" : "Live") : chain.name}</span>

@@ -41,17 +41,34 @@ export function walletError(e) {
   return null;
 }
 
+// ---- output normalisation (wallets differ: arrays vs objects, Uint8Array vs number[] vs base58) ----
+const first = (r) => (Array.isArray(r) ? r[0] : r);
+export function toBytes(x) {
+  if (!x) throw new Error("Wallet returned no signature");
+  if (x instanceof Uint8Array) return x;
+  if (typeof x === "string") return bs58.decode(x);
+  if (Array.isArray(x) || ArrayBuffer.isView(x)) return Uint8Array.from(x);
+  if (x.data && Array.isArray(x.data)) return Uint8Array.from(x.data); // Buffer JSON shape
+  if (typeof x === "object" && Object.keys(x).every((k) => /^\d+$/.test(k))) return Uint8Array.from(Object.values(x));
+  throw new Error("Unrecognised signature format from wallet");
+}
+const sigString = (x) => (typeof x === "string" ? x : bs58.encode(toBytes(x)));
+const CONNECT_TIMEOUT_MS = 60_000;
+
 // ---- adapters (one interface for Wallet Standard and legacy injected providers) ----
 function standardAdapter(w) {
   const f = w.features || {};
   let account = null;
   return {
     id: "std:" + w.name, name: w.name, icon: w.icon || null, kind: "standard", raw: w,
-    async connect(silent) {
-      if (!f["standard:connect"]) throw new Error("This wallet can't connect");
-      const r = await f["standard:connect"].connect(silent ? { silent: true } : undefined);
-      account = (r?.accounts || w.accounts || [])[0] || null;
-      return account?.address || null;
+    // NOTE: not async on purpose — standard:connect is invoked synchronously inside the click handler,
+    // otherwise some browsers/wallets drop the popup (user-activation is lost after an await).
+    connect(silent) {
+      if (!f["standard:connect"]) return Promise.reject(new Error("This wallet can't connect"));
+      return f["standard:connect"].connect(silent ? { silent: true } : undefined).then((r) => {
+        account = (r?.accounts?.length ? r.accounts : w.accounts || [])[0] || null;
+        return account?.address || null;
+      });
     },
     async disconnect() { try { await f["standard:disconnect"]?.disconnect(); } catch { /* ignore */ } account = null; },
     onChange(cb) {
@@ -60,26 +77,31 @@ function standardAdapter(w) {
     },
     chains: () => account?.chains || w.chains || [],
     async signMessage(bytes) {
-      if (!f["solana:signMessage"]) throw new Error("This wallet can't sign messages");
-      const [out] = await f["solana:signMessage"].signMessage({ account, message: bytes });
-      return out.signature;
+      if (!f["solana:signMessage"]) throw new Error("This wallet can't sign messages. Try Phantom, Solflare or Backpack.");
+      account = account || (w.accounts || [])[0];
+      const out = first(await f["solana:signMessage"].signMessage({ account, message: bytes }));
+      return toBytes(out?.signature ?? out);
     },
     canSignAndSend: () => !!f["solana:signAndSendTransaction"],
     async signAndSend(txBytes, chain) {
-      const [out] = await f["solana:signAndSendTransaction"].signAndSendTransaction({ account, transaction: txBytes, chain, options: { commitment: "confirmed" } });
-      return typeof out.signature === "string" ? out.signature : bs58.encode(out.signature);
+      account = account || (w.accounts || [])[0];
+      const out = first(await f["solana:signAndSendTransaction"].signAndSendTransaction({ account, chain, transaction: txBytes, options: { commitment: "confirmed", preflightCommitment: "confirmed" } }));
+      return sigString(out?.signature ?? out);
     },
     async signTransaction(txBytes, chain) {
       if (!f["solana:signTransaction"]) throw new Error("This wallet can't sign transactions");
-      const [out] = await f["solana:signTransaction"].signTransaction({ account, transaction: txBytes, chain });
-      return out.signedTransaction;
+      account = account || (w.accounts || [])[0];
+      const out = first(await f["solana:signTransaction"].signTransaction({ account, chain, transaction: txBytes }));
+      return toBytes(out?.signedTransaction ?? out);
     },
   };
 }
 function legacyAdapter(name, p) {
   return {
     id: "legacy:" + name, name, icon: p.icon || null, kind: "legacy", raw: p,
-    async connect(silent) { const r = await p.connect(silent ? { onlyIfTrusted: true } : undefined); return (r?.publicKey || p.publicKey)?.toString() || null; },
+    connect(silent) { // synchronous call into the provider (see note above)
+      return Promise.resolve(p.connect(silent ? { onlyIfTrusted: true } : undefined)).then((r) => (r?.publicKey || p.publicKey)?.toString() || null);
+    },
     async disconnect() { try { await p.disconnect(); } catch { /* ignore */ } },
     onChange(cb) {
       const a = (pk) => cb(pk ? pk.toString() : null), d = () => cb(null);
@@ -87,7 +109,7 @@ function legacyAdapter(name, p) {
       return () => { (p.off || p.removeListener)?.call(p, "accountChanged", a); (p.off || p.removeListener)?.call(p, "disconnect", d); };
     },
     chains: () => [],
-    async signMessage(bytes) { const r = await p.signMessage(bytes, "utf8"); return r.signature || r; },
+    async signMessage(bytes) { const r = await p.signMessage(bytes, "utf8"); return toBytes(r?.signature ?? r); },
     canSignAndSend: () => false, // legacy providers need web3.js Transaction objects; we sign bytes and submit via the engine
     async signTransaction(txBytes) {
       const { VersionedTransaction, Transaction } = await import("@solana/web3.js");
@@ -100,6 +122,7 @@ function legacyAdapter(name, p) {
 
 function useSolanaDiscovery() {
   const [list, setList] = useState([]);
+  const [detecting, setDetecting] = useState(true);
   useEffect(() => {
     let api; try { api = getWallets(); } catch { api = null; }
     const build = () => {
@@ -111,20 +134,24 @@ function useSolanaDiscovery() {
         ["Solflare", window.solflare?.isSolflare ? window.solflare : null],
         ["Backpack", window.backpack?.isBackpack || window.backpack?.connect ? window.backpack : null],
       ];
-      for (const [name, p] of legacy) if (p && !have.has(name.toLowerCase())) out.push(legacyAdapter(name, p));
+      // Phantom/Solflare/Backpack in-app browsers inject the legacy object AND register a standard wallet: list once.
+      for (const [name, p] of legacy) if (p && ![...have].some((n) => n.startsWith(name.toLowerCase()))) out.push(legacyAdapter(name, p));
       setList(out);
+      if (out.length) setDetecting(false);
     };
     build();
     const offs = api ? [api.on("register", build), api.on("unregister", build)] : [];
-    const late = setTimeout(build, 700);
-    return () => { clearTimeout(late); offs.forEach((o) => o?.()); };
+    // wallets may register (or inject window.phantom) well after load: keep rebuilding for a few seconds
+    const timers = [300, 700, 1500, 3000].map((ms) => setTimeout(build, ms));
+    const done = setTimeout(() => setDetecting(false), 3200);
+    return () => { timers.forEach(clearTimeout); clearTimeout(done); offs.forEach((o) => o?.()); };
   }, []);
-  return list;
+  return { list, detecting };
 }
 
 /** Same surface as the EVM useWallet: wallets, entry, account, connected, pending, picker, connect, disconnect. */
 export function useSolanaWallet(notify, { chain = "solana:mainnet" } = {}) {
-  const wallets = useSolanaDiscovery();
+  const { list: wallets, detecting } = useSolanaDiscovery();
   const [entry, setEntry] = useState(null);
   const [account, setAccount] = useState(null);
   const [pending, setPending] = useState(null);
@@ -161,16 +188,19 @@ export function useSolanaWallet(notify, { chain = "solana:mainnet" } = {}) {
   const connect = useCallback(async (w) => {
     if (inflight.current) { say("info", "Open your wallet to finish the pending request"); return false; }
     inflight.current = true; setPending("connect");
+    let timer;
     try {
-      const a = await w.connect(false);
+      const call = w.connect(false); // invoked synchronously in the click handler — keeps the popup alive
+      const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${w.name} didn't respond. Open the extension (it may be locked) and try again.`)), CONNECT_TIMEOUT_MS); });
+      const a = await Promise.race([call, timeout]);
       if (!a) throw Object.assign(new Error("User rejected the request."), { code: 4001 });
       const chains = w.chains();
       if (chains.length && !chains.includes(chain)) say("err", "Your wallet is on the wrong Solana network. Switch it to Mainnet.");
       setEntry(w); setAccount(a); store.set(w.id); setPickerOpen(false);
       say("ok", `Connected ${w.name}`);
       return true;
-    } catch (e) { report(e, `Could not connect to ${w.name}.`); return false; }
-    finally { inflight.current = false; setPending(null); }
+    } catch (e) { report(e, /didn't respond/.test(e?.message || "") ? e.message : `Could not connect to ${w.name}.`); return false; }
+    finally { clearTimeout(timer); inflight.current = false; setPending(null); }
   }, [chain]);
 
   const disconnect = useCallback(async () => {
@@ -179,9 +209,9 @@ export function useSolanaWallet(notify, { chain = "solana:mainnet" } = {}) {
   }, [entry]);
 
   return useMemo(() => ({
-    kind: "solana", chain, wallets, entry, account, pending, pickerOpen, chainId: null,
+    kind: "solana", chain, wallets, detecting, evmOnly: wallets.length === 0 && typeof window !== "undefined" && !!window.ethereum, entry, account, pending, pickerOpen, chainId: null,
     connected: !!(entry && account), wrongChain: false,
     openPicker: () => setPickerOpen(true), closePicker: () => setPickerOpen(false),
     connect, disconnect, switchChain: async () => true,
-  }), [chain, wallets, entry, account, pending, pickerOpen, connect, disconnect]);
+  }), [chain, wallets, detecting, entry, account, pending, pickerOpen, connect, disconnect]);
 }
