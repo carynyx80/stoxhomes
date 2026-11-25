@@ -181,8 +181,7 @@ export function useEngineExchange() {
   const quote = (marketId, size) => call(`/quote?marketId=${marketId}&size=${encodeURIComponent(size)}`);
   const accept = (price, buying) => str(mulF(big(price), buying ? 1 + SLIP : 1 - SLIP), 8);
   const posOf = (id) => (me?.positions || []).find((p) => Number(p.marketId) === Number(id));
-  const signedSize = (p) => (p.side === "short" ? "-" : "") + String(p.size).replace(/^-/, "");
-
+  
   const actions = {
     connect: async () => wcRaw.openPicker(),
     signIn,
@@ -209,12 +208,13 @@ export function useEngineExchange() {
       const p = posOf(marketId), long = p.side === "long";
       let amt = big(units); const full = big(String(p.size).replace(/^-/, ""));
       if (amt > full) amt = full;
-      const q = await quote(marketId, (long ? "" : "-") + str(amt, 8));
-      return post("/positions/modify", { marketId, sizeDelta: (long ? "-" : "") + str(amt, 8), acceptablePrice: accept(q.closeFillPrice ?? q.fillPrice, !long) });
+      const delta = (long ? "-" : "") + str(amt, 8); // trade delta, opposite to the position
+      const q = await quote(marketId, delta); // closeFillPrice = smoothed-index fill for this delta
+      return post("/positions/modify", { marketId, sizeDelta: delta, acceptablePrice: accept(q.closeFillPrice ?? q.fillPrice, !long) });
     }),
     close: act("close", ({ marketId }) => `Close ${symOf(marketId)}`, async ({ marketId }) => {
       const p = posOf(marketId), long = p.side === "long";
-      const q = await quote(marketId, signedSize(p));
+      const q = await quote(marketId, (long ? "-" : "") + String(p.size).replace(/^-/, "")); // closing trade = −size
       return post("/positions/close", { marketId, acceptablePrice: accept(q.closeFillPrice ?? q.fillPrice, !long) });
     }),
     addMargin: act("addMargin", ({ amount }) => `Add ${amount} USDT margin`, ({ marketId, amount }) => post("/positions/margin", { marketId, delta: str(big(amount)) })),
@@ -222,7 +222,7 @@ export function useEngineExchange() {
     deposit: act("vaultDeposit", ({ amount }) => `Deposit ${amount} USDT to the vault`, ({ amount }) => post("/vault/deposit", { amount: str(big(amount)) })),
     requestWithdraw: act("requestWithdraw", ({ pct }) => `Request vault withdrawal (${pct}%)`, ({ pct }) => {
       const sh = big(me.me.vault.shares);
-      return post("/vault/request-withdraw", { shares: str((sh * BigInt(Math.round(pct * 100))) / 10_000n, 8) });
+      return post("/vault/request-withdraw", { shares: str((sh * BigInt(Math.round(pct * 100))) / 10_000n, 12) });
     }),
     cancelWithdraw: act("cancelWithdraw", () => "Cancel vault withdrawal", () => post("/vault/cancel-withdraw")),
     withdraw: act("withdraw", () => "Withdraw from vault", () => post("/vault/withdraw")),
@@ -265,13 +265,20 @@ export function useEngineExchange() {
         setBusy("pay:" + w.id);
         if (wcRaw.chainId !== cfg.chainId && !(await wcRaw.switchChain(cfg.chainId))) return false;
         const bp = new ethers.BrowserProvider(wcRaw.entry.provider, "any");
+        bp.pollingInterval = 1000;
         const usdt = new ethers.Contract(cfg.usdt.address, ERC20, new ethers.JsonRpcSigner(bp, account));
         const value = ethers.parseUnits(String(w.amount), cfg.usdt.decimals ?? 18);
         const id = push({ kind: "pending", text: `Pay ${w.amount} USDT to ${short(w.to)} — confirm in wallet` });
         const tx = await usdt.transfer(w.to, value);
         patch(id, { text: "Payment sent — waiting for 1 confirmation", hash: tx.hash });
         await tx.wait();
-        await call(`/admin/withdrawals/${w.id}/paid`, { method: "POST", body: { txHash: tx.hash }, token });
+        // The engine's watcher also matches payouts on chain; only report the tx if it hasn't already.
+        const isPaid = async () => { const l = await call("/admin/withdrawals?status=paid", { token }).catch(() => []); return Array.isArray(l) && l.some((x) => String(x.id) === String(w.id)); };
+        if (!(await isPaid())) {
+          try {
+            await call(`/admin/withdrawals/${w.id}/paid`, { method: "POST", body: { txHash: tx.hash }, token });
+          } catch (e) { if (!(await isPaid())) throw e; }
+        }
         patch(id, { kind: "ok", text: `Paid ${w.amount} USDT to ${short(w.to)}` });
         return true;
       } catch (e) {
@@ -289,7 +296,7 @@ export function useEngineExchange() {
     const markets = pub.markets.map((m) => {
       const sym = m.symbol, next = m.nextPrintAt ? Number(m.nextPrintAt) * 1000 : null;
       return {
-        id: Number(m.id), name: m.name || `${sym}-USD`, symbol: sym, ...(META[sym] || { city: sym, country: "", coords: "" }),
+        id: Number(m.id), name: `${sym}-USD`, symbol: sym, ...(META[sym] || { city: sym, country: "", coords: "" }),
         index: n(m.indexPrice), mark: n(m.markPrice), funding: n(m.fundingRatePerDay), skew: n(m.skew), skewScale: 0,
         longSize: n(m.longOI), shortSize: n(m.shortOI), change24h: n(m.change24h), change1y: null, volume24h: n(m.volume24h),
         nextPrintAt: next, closeOnlyFrom: next ? next - 6 * 3600_000 : null, closeOnly: !!m.closeOnly, active: m.active !== false,

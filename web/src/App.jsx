@@ -397,7 +397,7 @@ function Tape({ trades }) {
           <li key={t.id} className={t.side}>
             <span className="tt">{new Date(t.ts).toLocaleTimeString("en-GB")}</span>
             <b>{t.market}</b>
-            <span className="ts">{t.side === "long" ? "▲ Long" : "▼ Short"} {t.leverage ? t.leverage + "×" : t.kind}</span>
+            <span className="ts">{t.leverage && (t.kind ?? "open") === "open" ? `${t.side === "long" ? "▲ Long" : "▼ Short"} ${t.leverage}×` : `${t.side === "long" ? "▲ Buy" : "▼ Sell"} · ${t.kind}`}</span>
             <span className="tp">{t.price.toFixed(2)}</span>
             <span className="tn">{compact(t.notional)}</span>
           </li>
