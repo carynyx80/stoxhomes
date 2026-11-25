@@ -308,7 +308,9 @@ function Ticket({ m, ex, ps, openFunds }) {
         <div><dt>Fee 0.05%</dt><dd>{usd(fee, 2)}</dd></div>
         <div><dt>Funding / day</dt><dd>{pctS((side === "long" ? -1 : 1) * m.funding, 4)}</dd></div>
       </dl>
-      {ps.kind === "active"
+      {m.active === false
+        ? <button className="go locked" disabled>Market paused</button>
+        : ps.kind === "active"
         ? <button className="go locked" disabled>Close-only{ps.left > 0 ? ` · opens in ${countdown(ps.left)}` : " · awaiting print"}</button>
         : !ex.wallet.connected
           ? <button className="go long" disabled={ex.wc?.pending === "connect"} onClick={() => ex.actions.connect()}>{ex.wc?.pending === "connect" ? "Connecting…" : "Connect wallet to trade"}</button>
@@ -455,7 +457,7 @@ function Vault({ ex, pool, now, cooldown, setSheet }) {
         <p className="eyebrow">Liquidity vault · USDT <Custody /></p>
         <h3>Be the house.</h3>
         <p className="lede">LPs are the counterparty to every trade — earning fees, funding from the crowded side and trader losses.</p>
-        <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
+        <div className="apr"><b>{pool.apr == null ? "—" : <Tween value={pool.apr * 100} format={(v) => v.toFixed(1)} />}<i>%</i></b><span>{ex.engine ? "Fee APR, trailing 7d" : ex.live ? "Fee APR, trailing 30d" : "APR, trailing 30d"}</span></div>
         <div className="apr-split">
           {pool.feesApr != null && <span><i style={{ background: "#fff" }} />Fees {(pool.feesApr * 100).toFixed(1)}%</span>}
           {pool.fundingApr != null && <span><i style={{ background: "#9fb0ff" }} />Funding {(pool.fundingApr * 100).toFixed(1)}%</span>}
