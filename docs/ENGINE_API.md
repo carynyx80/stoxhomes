@@ -82,3 +82,54 @@ Error codes include: `UNAUTHORIZED`, `INSUFFICIENT_BALANCE`, `LEVERAGE_TOO_HIGH`
 
 Messages `{ type, data }`: `markets` (every few seconds), `trade` (public tape), and for an auth'd
 socket `me` (balance/positions changed), `deposit`, `withdrawal`.
+
+---
+
+# v2: Solana (supersedes the BNB Chain money layer above)
+
+Stoxhome moves to **Solana mainnet-beta**. Trading, positions, funding, liquidation, vault and the
+ledger are unchanged. Only the chain layer, addresses and sign-in change.
+
+- **Company wallet (deposit address, admin):** `8oYH186qjPyYwnS58fh1NH1m5iFFJe8wPnBKVp3NGtgx`
+- **Collateral (both credited 1:1 as USD, ledger stays integer micro-USD 1e-6):**
+  - USDC `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (6 decimals, SPL Token program)
+  - USDT `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` (6 decimals, SPL Token program)
+- Addresses are base58 public keys everywhere (users, company, tx signatures).
+
+## Config
+`GET /config` → `{ chain: "solana", cluster: "mainnet-beta", companyAddress, tokens: [{ symbol, mint, decimals, companyTokenAccount }], withdrawTokens: ["USDC","USDT"], commitment: "finalized", minDeposit, minWithdraw, fees, markets }`
+`companyTokenAccount` is the company's associated token account (ATA) per mint, derived deterministically.
+
+`GET /chain/blockhash` → `{ blockhash, lastValidBlockHeight }` (engine proxies the RPC so browsers never hit rate limits/CORS).
+
+## Sign-in (Sign-In With Solana style)
+- `POST /auth/nonce { address }` → `{ message }` (domain, base58 address, nonce, issued-at, "Solana mainnet").
+- `POST /auth/verify { address, message, signature }` where `signature` is **base58** of the 64-byte ed25519
+  signature from the wallet's `signMessage(utf8(message))`. Verified with ed25519 against the address bytes.
+- `isAdmin` true only for the company address.
+
+## Deposits
+A user sends USDC or USDT **from the wallet they sign in with** to the company (the wallet creates the
+company ATA if it does not exist yet). The engine polls `getSignaturesForAddress(companyATA)` for each mint
+(commitment finalized, paging with `until`), fetches each with
+`getTransaction(sig, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1, commitment: "finalized" })`,
+and computes the company ATA balance increase from `meta.pre/postTokenBalances`. The credited user is the
+**owner** of the token account(s) whose balance of that mint decreased in the same transaction. If the
+transaction failed, has several distinct sending owners, or the sender is unknown/ambiguous, it is recorded
+as `unattributed` for the admin to resolve and never auto-credited. Idempotent by `signature:mint`.
+`GET /me/deposits` items: `{ signature, token, amount, status: "confirming"|"credited"|"below_minimum", at }`.
+
+## Withdrawals
+`POST /withdrawals { amount, token }` (token `USDC` default or `USDT`; destination is always the caller's
+own address; paid to the caller's ATA for that mint). Admin "Pay" builds, in the browser wallet of the company:
+`createAssociatedTokenAccountIdempotent(user ATA)` + `transferChecked(companyATA → userATA, amount)`, then
+`POST /admin/withdrawals/:id/paid { signature }`. The engine verifies the finalized transaction: success, the
+mint matches, the source is the company ATA, the destination token account's owner is the user, the amount is
+≥ requested, and the signature has not been used before. Outgoing transfers from the company ATAs found by
+the watcher auto-mark the oldest exact-amount pending withdrawal of that user and token.
+The company wallet needs a little SOL for fees and ATA rent (~0.002 SOL per new recipient account).
+
+## Admin overview
+`companyOnChain` = USDC + USDT balances of the company ATAs (via `getTokenAccountBalance`), plus
+`companySol` so the admin sees whether fees can be paid. `unattributedDeposits` lists deposits that need a
+manual decision (`POST /admin/deposits/:signature/credit { address }` or `/refund-note`).
