@@ -8,7 +8,7 @@ import { chain, deployment, CHAIN_ID } from "./chain.js";
 const shortAddr = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const Custody = () => (ENGINE_MODE ? <span className="custody"><i />Custodial · funds held by Stoxhome</span> : null);
 const isAdminRoute = () => typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
-import { Sheet, Toasts, WalletPicker } from "./ui/Overlays.jsx";
+import { Sheet, Toasts, WalletPicker, ConnectButton } from "./ui/Overlays.jsx";
 import { targetChainName } from "./data/wallet.js";
 import { API } from "./data/live.js";
 import Skyline from "./ui/Skyline.jsx";
@@ -81,7 +81,7 @@ function TopBar({ ex, setFunds, onHome }) {
       <a className="brand" href="/" onClick={(e) => { e.preventDefault(); onHome(); }}><span className="mark"><LogoMark size={25} /></span><span>Stox<em>home</em></span></a>
       <div className="top-r">
         <span className={"net" + (ex.live && !ex.error ? " ok" : "")}><i />{USE_MOCK ? "Mock data" : ENGINE_MODE ? (ex.error ? "Offline" : "Live") : chain.name}</span>
-        <WalletButtons ex={ex} setFunds={setFunds} />
+        {ENGINE_MODE ? <ConnectButton ex={ex} onFunds={setFunds} /> : <WalletButtons ex={ex} setFunds={setFunds} />}
       </div>
     </header>
   );
